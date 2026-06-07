@@ -2,7 +2,7 @@ services:
   nemotron:
     container_name: nemotron-speech-docker-cpu
     image: nemotron-speech-docker-cpu
-    build:
+    build: .
     ports:
       - "${HOST_PORT:-8000}:8000"
     environment:
