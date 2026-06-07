@@ -1,0 +1,17 @@
+services:
+  nemotron-speech-docker-cpu:
+    image: nemotron-speech-docker-cpu
+    build:
+    ports:
+      - "${HOST_PORT:-8000}:8000"
+    environment:
+      MODEL_ID: onnx-community/nemotron-3.5-asr-streaming-0.6b-onnx-int4
+      MODEL_DIR: /models/nemotron
+      EXECUTION_PROVIDER: cpu
+      CONFIG_PATH: /app/config.yaml
+    volumes:
+      - nemotron-models:/models
+    restart: unless-stopped
+
+volumes:
+  nemotron-models:

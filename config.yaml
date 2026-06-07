@@ -1,0 +1,10 @@
+model_id: onnx-community/nemotron-3.5-asr-streaming-0.6b-onnx-int4
+model_dir: /models/nemotron
+execution_provider: cpu
+default_chunk_ms: 560
+startup_self_test: true
+self_test_audio:
+  - language: en
+    path: tests/audio/sample-0.mp3
+  - language: hi
+    path: tests/audio/HIN_M_AbhishekS.mp3
