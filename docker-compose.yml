@@ -1,5 +1,5 @@
 services:
-  nemotron-speech-docker-cpu:
+  nemotron:
     container_name: nemotron-speech-docker-cpu
     image: nemotron-speech-docker-cpu
     build:
