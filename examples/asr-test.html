@@ -47,6 +47,8 @@
     .metrics{display:flex;gap:1rem;margin-top:0.6rem;font-size:0.78rem;color:var(--muted)}
     .metrics span{font-family:ui-monospace,monospace}
     .note{font-size:0.75rem;color:var(--muted);margin-top:0.4rem}
+    .checkbox-label{font-size:0.82rem;color:var(--text);display:flex;align-items:center;gap:0.35rem;flex-direction:row}
+    .checkbox-label input[type="checkbox"]{accent-color:var(--accent);width:16px;height:16px}
   </style>
 </head>
 <body>
@@ -84,10 +86,20 @@
           <option value="pt-BR">Portuguese</option>
         </select>
       </label>
+      <label>Chunk
+        <select id="chunkMic">
+          <option value="80">80ms</option>
+          <option value="160">160ms</option>
+          <option value="320">320ms</option>
+          <option value="560" selected>560ms</option>
+          <option value="1120">1120ms</option>
+        </select>
+      </label>
+      <label class="checkbox-label"><input type="checkbox" id="vadMic"> VAD</label>
     </div>
     <div class="output" id="micOut"><span class="placeholder">Click Start and speak...</span></div>
     <div class="metrics" id="micMetrics"></div>
-    <div class="note">Mic needs HTTPS or localhost. Use port 3004 (HTTPS) for mic from LAN, or 3003 (HTTP) on localhost.</div>
+    <div class="note">Mic needs HTTPS or localhost. Use port 3004 (HTTPS) for mic from LAN, or 3003 (HTTP) on localhost.<br>Smaller chunk size (80-160ms) catches short words better. VAD may skip very brief utterances.</div>
   </div>
 
   <div id="panel-file" class="panel">
@@ -108,6 +120,16 @@
           <option value="pt-BR">Portuguese</option>
         </select>
       </label>
+      <label>Chunk
+        <select id="chunkFile">
+          <option value="80">80ms</option>
+          <option value="160">160ms</option>
+          <option value="320">320ms</option>
+          <option value="560" selected>560ms</option>
+          <option value="1120">1120ms</option>
+        </select>
+      </label>
+      <label class="checkbox-label"><input type="checkbox" id="vadFile"> VAD</label>
     </div>
     <div class="file-info" id="fileInfo"></div>
     <div class="output" id="fileOut"><span class="placeholder">Choose an audio file...</span></div>
@@ -216,7 +238,11 @@ async function startMic() {
 
   ws.onopen = () => {
     setStatus('Connected', '');
-    ws.send(JSON.stringify({ language: document.getElementById('langMic').value, chunk_ms: 560 }));
+    ws.send(JSON.stringify({
+      language: document.getElementById('langMic').value,
+      chunk_ms: parseInt(document.getElementById('chunkMic').value),
+      use_vad: document.getElementById('vadMic').checked
+    }));
   };
   ws.onmessage = (ev) => {
     const msg = JSON.parse(ev.data);
@@ -350,7 +376,8 @@ async function uploadFile() {
   const fd = new FormData();
   fd.append('file', f);
   fd.append('language', document.getElementById('langFile').value);
-  fd.append('chunk_ms', '560');
+  fd.append('chunk_ms', document.getElementById('chunkFile').value);
+  if (document.getElementById('vadFile').checked) fd.append('use_vad', 'true');
 
   try {
     const resp = await fetch('/v1/transcriptions', { method: 'POST', body: fd });

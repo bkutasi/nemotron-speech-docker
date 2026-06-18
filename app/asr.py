@@ -1,6 +1,7 @@
 import asyncio
 import json
 import os
+import re
 import subprocess
 import tempfile
 import time
@@ -94,6 +95,11 @@ LANG_TO_ID: dict[str, tuple[int, str]] = {
 
 SUPPORTED_CHUNK_MS = (80, 160, 320, 560, 1120)
 DEFAULT_CHUNK_MS = 560
+
+# The Nemotron vocab includes language-tag tokens (e.g. <en-US>, <de-DE>) and
+# other special tokens (<blank>, <unk>) that the model may emit during decoding.
+# Strip them from the output text so they don't appear in transcripts.
+_SPECIAL_TOKEN_RE = re.compile(r"<[a-zA-Z]{2}-[a-zA-Z]{2}>|<blank>|<unk>")
 
 
 @dataclass(frozen=True)
@@ -363,7 +369,7 @@ class GenerationSession:
                 token_text = self.tokenizer_stream.decode(tokens[0])
                 if token_text:
                     text += token_text
-        return text
+        return _SPECIAL_TOKEN_RE.sub("", text)
 
 
 class ASRStream:
