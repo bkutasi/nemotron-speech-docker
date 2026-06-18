@@ -3,132 +3,287 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Nemotron ASR Live Test</title>
+  <title>Nemotron ASR</title>
   <style>
-    body { font-family: system-ui, sans-serif; background: #1a1a2e; color: #eee; max-width: 700px; margin: 2rem auto; padding: 1rem; }
-    h1 { font-size: 1.3rem; }
-    .status { font-size: 0.85rem; color: #8be9fd; margin-bottom: 1rem; }
-    button { background: #50fa7b; color: #1a1a2e; border: none; border-radius: 6px; padding: 0.6rem 1.2rem; font-size: 0.95rem; cursor: pointer; margin-right: 0.5rem; }
-    button.stop { background: #ff5555; color: #fff; }
-    button:disabled { opacity: 0.4; cursor: default; }
-    select, input { background: #16213e; color: #eee; border: 1px solid #333; border-radius: 6px; padding: 0.4rem; font-size: 0.85rem; }
-    label { font-size: 0.8rem; color: #888; margin-right: 0.8rem; }
-    .controls { display: flex; align-items: center; gap: 0.5rem; margin-bottom: 1rem; flex-wrap: wrap; }
-    pre { background: #0f0f23; border: 1px solid #333; border-radius: 8px; padding: 1rem; min-height: 120px; white-space: pre-wrap; word-break: break-word; font-size: 0.95rem; line-height: 1.6; }
-    .partial { color: #6272a4; font-style: italic; }
-    .final { color: #f8f8f2; }
+    *,*::before,*::after{box-sizing:border-box}
+    :root{--bg:#0d1117;--card:#161b22;--border:#30363d;--text:#e6edf3;--muted:#7d8590;--accent:#2f81f7;--accent-h:#4493f8;--green:#238636;--red:#da3633;--yellow:#d29922}
+    body{font-family:-apple-system,system-ui,sans-serif;background:var(--bg);color:var(--text);margin:0;padding:1rem;min-height:100vh}
+    .container{max-width:680px;margin:0 auto}
+    .header{display:flex;align-items:center;gap:0.6rem;margin-bottom:1.2rem}
+    .header h1{font-size:1.15rem;font-weight:600;margin:0}
+    .header .dot{width:10px;height:10px;border-radius:50%;background:var(--muted);flex-shrink:0}
+    .header .dot.live{background:var(--green);animation:pulse 1.5s infinite}
+    .header .dot.err{background:var(--red)}
+    @keyframes pulse{0%,100%{opacity:1}50%{opacity:0.4}}
+    .status{font-size:0.8rem;color:var(--muted);margin-bottom:1rem}
+    .tabs{display:flex;gap:0;border-bottom:1px solid var(--border);margin-bottom:1.2rem}
+    .tab{padding:0.55rem 1rem;border:none;background:none;color:var(--muted);font-size:0.88rem;cursor:pointer;border-bottom:2px solid transparent;font-family:inherit}
+    .tab.active{color:var(--text);border-bottom-color:var(--accent)}
+    .panel{display:none}
+    .panel.active{display:block}
+    .controls{display:flex;align-items:center;gap:0.7rem;flex-wrap:wrap;margin-bottom:1rem}
+    .controls label{font-size:0.78rem;color:var(--muted);display:flex;flex-direction:column;gap:0.2rem}
+    select,input[type="file"]{background:var(--card);color:var(--text);border:1px solid var(--border);border-radius:6px;padding:0.38rem 0.5rem;font-size:0.85rem;font-family:inherit}
+    .btn{border:none;border-radius:6px;padding:0.5rem 1.1rem;font-size:0.88rem;cursor:pointer;font-family:inherit;font-weight:500}
+    .btn-go{background:var(--green);color:#fff}
+    .btn-go:hover{background:#2ea043}
+    .btn-stop{background:var(--red);color:#fff}
+    .btn-stop:hover{background:#f85149}
+    .btn:disabled{opacity:0.4;cursor:default}
+    .btn-upload{background:var(--accent);color:#fff}
+    .btn-upload:hover{background:var(--accent-h)}
+    .file-info{font-size:0.8rem;color:var(--muted);margin-bottom:0.5rem}
+    .output{background:#010409;border:1px solid var(--border);border-radius:8px;padding:1rem 1.1rem;min-height:100px;white-space:pre-wrap;word-break:break-word;font-size:0.92rem;line-height:1.6}
+    .output .partial{color:var(--muted)}
+    .output .final{color:var(--text)}
+    .output .placeholder{color:var(--muted);font-style:italic}
+    .warn{background:#1c1208;border:1px solid var(--yellow);color:var(--yellow);border-radius:6px;padding:0.5rem 0.8rem;font-size:0.8rem;margin-bottom:0.8rem}
+    .metrics{display:flex;gap:1rem;margin-top:0.6rem;font-size:0.78rem;color:var(--muted)}
+    .metrics span{font-family:ui-monospace,monospace}
   </style>
 </head>
 <body>
-  <h1>Nemotron ASR Live Transcription</h1>
-  <div class="status" id="status">Idle</div>
-  <div class="controls">
-    <button id="startBtn" onclick="start()">Start Recording</button>
-    <button id="stopBtn" class="stop" onclick="stop()" disabled>Stop</button>
-    <label>Language
-      <select id="lang">
-        <option value="auto">Auto-detect</option>
-        <option value="en">English</option>
-        <option value="es">Spanish</option>
-        <option value="fr">French</option>
-        <option value="de">German</option>
-        <option value="hi">Hindi</option>
-        <option value="zh-CN">Chinese</option>
-        <option value="ja">Japanese</option>
-      </select>
-    </label>
+<div class="container">
+  <div class="header">
+    <div class="dot" id="dot"></div>
+    <h1>Nemotron ASR</h1>
   </div>
-  <pre id="transcript"><span class="partial">Transcription will appear here...</span></pre>
+  <div class="status" id="status">Ready</div>
+
+  <div id="sslWarn" class="warn" style="display:none">
+    Microphone requires HTTPS or localhost. File upload works on any connection.
+  </div>
+
+  <div class="tabs">
+    <button class="tab active" onclick="switchTab('mic')">Live Mic</button>
+    <button class="tab" onclick="switchTab('file')">File Upload</button>
+  </div>
+
+  <div id="panel-mic" class="panel active">
+    <div class="controls">
+      <button class="btn btn-go" id="startBtn" onclick="startMic()">Start</button>
+      <button class="btn btn-stop" id="stopBtn" onclick="stopMic()" disabled>Stop</button>
+      <label>Language
+        <select id="langMic">
+          <option value="auto">Auto</option>
+          <option value="en">English</option>
+          <option value="es">Spanish</option>
+          <option value="fr">French</option>
+          <option value="de">German</option>
+          <option value="hi">Hindi</option>
+          <option value="zh-CN">Chinese</option>
+          <option value="ja">Japanese</option>
+          <option value="ru">Russian</option>
+          <option value="pt-BR">Portuguese</option>
+        </select>
+      </label>
+    </div>
+    <div class="output" id="micOut"><span class="placeholder">Click Start and speak...</span></div>
+    <div class="metrics" id="micMetrics"></div>
+  </div>
+
+  <div id="panel-file" class="panel">
+    <div class="controls">
+      <input type="file" id="fileInput" accept="audio/*">
+      <button class="btn btn-upload" id="uploadBtn" onclick="uploadFile()" disabled>Transcribe</button>
+      <label>Language
+        <select id="langFile">
+          <option value="auto">Auto</option>
+          <option value="en">English</option>
+          <option value="es">Spanish</option>
+          <option value="fr">French</option>
+          <option value="de">German</option>
+          <option value="hi">Hindi</option>
+          <option value="zh-CN">Chinese</option>
+          <option value="ja">Japanese</option>
+          <option value="ru">Russian</option>
+          <option value="pt-BR">Portuguese</option>
+        </select>
+      </label>
+    </div>
+    <div class="file-info" id="fileInfo"></div>
+    <div class="output" id="fileOut"><span class="placeholder">Choose an audio file...</span></div>
+    <div class="metrics" id="fileMetrics"></div>
+  </div>
+</div>
 
 <script>
-let ws = null;
-let mediaRecorder = null;
-let audioContext = null;
-let processor = null;
-let stream = null;
-let transcriptEl = document.getElementById('transcript');
-let statusEl = document.getElementById('status');
-let startBtn = document.getElementById('startBtn');
-let stopBtn = document.getElementById('stopBtn');
+const TARGET_RATE = 16000;
+let isSecure = location.protocol === 'https:' || location.hostname === 'localhost' || location.hostname === '127.0.0.1';
+if (!isSecure) document.getElementById('sslWarn').style.display = 'block';
 
-function setStatus(msg) { statusEl.textContent = msg; }
+// --- Tab switching ---
+function switchTab(name) {
+  document.querySelectorAll('.tab').forEach((t,i) => t.classList.toggle('active', (name==='mic')=== (i===0)));
+  document.getElementById('panel-mic').classList.toggle('active', name==='mic');
+  document.getElementById('panel-file').classList.toggle('active', name==='file');
+}
 
-async function start() {
-  startBtn.disabled = true;
-  stopBtn.disabled = false;
-  setStatus('Requesting microphone...');
+// --- Status helpers ---
+const dot = document.getElementById('dot');
+const statusEl = document.getElementById('status');
+function setStatus(msg, state) {
+  statusEl.textContent = msg;
+  dot.className = 'dot' + (state ? ' ' + state : '');
+}
+
+// --- Mic streaming ---
+let ws = null, audioCtx = null, processor = null, micStream = null, nativeRate = 0;
+const startBtn = document.getElementById('startBtn');
+const stopBtn = document.getElementById('stopBtn');
+const micOut = document.getElementById('micOut');
+const micMetrics = document.getElementById('micMetrics');
+
+async function startMic() {
+  if (!isSecure) { setStatus('HTTPS required for mic access on LAN', 'err'); return; }
+  startBtn.disabled = true; stopBtn.disabled = false;
+  setStatus('Requesting microphone...', '');
   try {
-    stream = await navigator.mediaDevices.getUserMedia({ audio: { channelCount: 1, sampleRate: 16000 } });
+    micStream = await navigator.mediaDevices.getUserMedia({ audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true } });
   } catch (e) {
-    setStatus('Microphone access denied: ' + e.message);
-    startBtn.disabled = false;
-    stopBtn.disabled = true;
+    setStatus('Mic denied: ' + e.message, 'err');
+    startBtn.disabled = false; stopBtn.disabled = true;
     return;
   }
 
   const wsUrl = (location.protocol === 'https:' ? 'wss://' : 'ws://') + location.host + '/v1/transcriptions/stream';
   ws = new WebSocket(wsUrl);
   ws.binaryType = 'arraybuffer';
-  transcriptEl.innerHTML = '<span class="partial"></span>';
+  micOut.innerHTML = '<span class="placeholder">Connecting...</span>';
 
   ws.onopen = () => {
-    setStatus('Connected. Sending config...');
-    ws.send(JSON.stringify({ language: document.getElementById('lang').value, chunk_ms: 560 }));
+    setStatus('Connected', '');
+    ws.send(JSON.stringify({ language: document.getElementById('langMic').value, chunk_ms: 560 }));
   };
-
-  ws.onmessage = (event) => {
-    const msg = JSON.parse(event.data);
+  ws.onmessage = (ev) => {
+    const msg = JSON.parse(ev.data);
     if (msg.event === 'ready') {
-      setStatus('Streaming (sample_rate=' + msg.sample_rate + ')');
-      startAudio(msg.sample_rate);
+      startAudio(msg.sample_rate || TARGET_RATE);
     } else if (msg.event === 'partial') {
-      transcriptEl.innerHTML = '<span class="partial">' + escapeHtml(msg.text) + '</span>';
+      micOut.innerHTML = '<span class="partial">' + esc(msg.text) + '</span>';
     } else if (msg.event === 'final') {
-      transcriptEl.innerHTML = '<span class="final">' + escapeHtml(msg.text) + '</span>';
-      setStatus('Done. RTF=' + (msg.rtf || 'n/a'));
+      micOut.innerHTML = '<span class="final">' + esc(msg.text) + '</span>';
+      setStatus('Done', '');
+      micMetrics.innerHTML = fmtMetrics(msg);
     } else if (msg.event === 'error') {
-      setStatus('Error: ' + msg.message);
+      setStatus('Error: ' + msg.message, 'err');
     }
   };
-
-  ws.onerror = () => { setStatus('WebSocket error'); cleanup(); };
-  ws.onclose = () => { setStatus('Disconnected'); cleanup(); };
+  ws.onerror = () => { setStatus('WebSocket error', 'err'); cleanupMic(); };
+  ws.onclose = () => { if (startBtn.disabled) { setStatus('Disconnected', ''); cleanupMic(); } };
 }
 
-async function startAudio(targetRate) {
-  audioContext = new AudioContext({ sampleRate: targetRate });
-  const source = audioContext.createMediaStreamSource(stream);
-  processor = audioContext.createScriptProcessor(4096, 1, 1);
+async function startAudio(serverRate) {
+  audioCtx = new AudioContext();
+  if (audioCtx.state === 'suspended') await audioCtx.resume();
+  nativeRate = audioCtx.sampleRate;
+  setStatus('Recording @ ' + nativeRate + 'Hz -> ' + serverRate + 'Hz', 'live');
+
+  const source = audioCtx.createMediaStreamSource(micStream);
+  processor = audioCtx.createScriptProcessor(4096, 1, 1);
+
   processor.onaudioprocess = (e) => {
     if (!ws || ws.readyState !== WebSocket.OPEN) return;
     const input = e.inputBuffer.getChannelData(0);
-    const pcm = new Float32Array(input);
+    const pcm = downsample(input, nativeRate, serverRate);
     ws.send(pcm.buffer);
   };
+
+  // Mute output to prevent feedback echo, but ScriptProcessor needs a connection to fire
+  const mute = audioCtx.createGain();
+  mute.gain.value = 0;
   source.connect(processor);
-  processor.connect(audioContext.destination);
-  setStatus('Recording...');
+  processor.connect(mute);
+  mute.connect(audioCtx.destination);
 }
 
-function stop() {
-  if (ws && ws.readyState === WebSocket.OPEN) {
-    ws.send(JSON.stringify({ event: 'end' }));
-  }
-  cleanup();
+function stopMic() {
+  if (ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ event: 'end' }));
+  cleanupMic();
 }
 
-function cleanup() {
+function cleanupMic() {
   if (processor) { processor.disconnect(); processor = null; }
-  if (audioContext) { audioContext.close(); audioContext = null; }
-  if (stream) { stream.getTracks().forEach(t => t.stop()); stream = null; }
-  startBtn.disabled = false;
-  stopBtn.disabled = true;
+  if (audioCtx) { audioCtx.close(); audioCtx = null; }
+  if (micStream) { micStream.getTracks().forEach(t => t.stop()); micStream = null; }
+  startBtn.disabled = false; stopBtn.disabled = true;
 }
 
-function escapeHtml(s) {
-  const d = document.createElement('div');
-  d.textContent = s;
-  return d.innerHTML;
+// Downsample with linear interpolation
+function downsample(buf, inRate, outRate) {
+  if (inRate === outRate) return new Float32Array(buf);
+  const ratio = inRate / outRate;
+  const newLen = Math.round(buf.length / ratio);
+  const out = new Float32Array(newLen);
+  for (let i = 0; i < newLen; i++) {
+    const pos = i * ratio;
+    const lo = Math.floor(pos);
+    const hi = Math.min(lo + 1, buf.length - 1);
+    const frac = pos - lo;
+    out[i] = buf[lo] * (1 - frac) + buf[hi] * frac;
+  }
+  return out;
+}
+
+// --- File upload ---
+const fileInput = document.getElementById('fileInput');
+const uploadBtn = document.getElementById('uploadBtn');
+const fileInfo = document.getElementById('fileInfo');
+const fileOut = document.getElementById('fileOut');
+const fileMetrics = document.getElementById('fileMetrics');
+
+fileInput.addEventListener('change', () => {
+  const f = fileInput.files[0];
+  if (f) {
+    uploadBtn.disabled = false;
+    fileInfo.textContent = f.name + ' (' + (f.size / 1024).toFixed(0) + ' KB)';
+  } else {
+    uploadBtn.disabled = true;
+    fileInfo.textContent = '';
+  }
+});
+
+async function uploadFile() {
+  const f = fileInput.files[0];
+  if (!f) return;
+  uploadBtn.disabled = true;
+  fileOut.innerHTML = '<span class="placeholder">Transcribing...</span>';
+  fileMetrics.innerHTML = '';
+  setStatus('Uploading ' + f.name + '...', '');
+
+  const fd = new FormData();
+  fd.append('file', f);
+  fd.append('language', document.getElementById('langFile').value);
+  fd.append('chunk_ms', '560');
+
+  try {
+    const resp = await fetch('/v1/transcriptions', { method: 'POST', body: fd });
+    const data = await resp.json();
+    if (resp.ok) {
+      fileOut.innerHTML = '<span class="final">' + esc(data.text) + '</span>';
+      setStatus('Done', '');
+      fileMetrics.innerHTML = fmtMetrics(data);
+    } else {
+      fileOut.innerHTML = '<span class="placeholder">Error: ' + esc(data.detail || 'Unknown') + '</span>';
+      setStatus('Error', 'err');
+    }
+  } catch (e) {
+    fileOut.innerHTML = '<span class="placeholder">Fetch error: ' + esc(e.message) + '</span>';
+    setStatus('Error', 'err');
+  }
+  uploadBtn.disabled = false;
+}
+
+// --- Utils ---
+function esc(s) { const d = document.createElement('div'); d.textContent = s || ''; return d.innerHTML; }
+function fmtMetrics(m) {
+  if (!m.duration_seconds) return '';
+  const parts = [];
+  if (m.duration_seconds) parts.push('duration: ' + m.duration_seconds.toFixed(2) + 's');
+  if (m.wall_seconds) parts.push('wall: ' + m.wall_seconds.toFixed(2) + 's');
+  if (m.rtf) parts.push('rtf: ' + m.rtf.toFixed(1));
+  if (m.chunks_processed) parts.push('chunks: ' + m.chunks_processed);
+  return parts.map(p => '<span>' + p + '</span>').join('');
 }
 </script>
 </body>

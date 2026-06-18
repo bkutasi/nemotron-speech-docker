@@ -2,6 +2,7 @@
 import argparse
 import asyncio
 import json
+import ssl
 import subprocess
 from pathlib import Path
 
@@ -11,7 +12,7 @@ import websockets
 async def main() -> None:
     parser = argparse.ArgumentParser(description="Stream an audio file to the ASR WebSocket endpoint.")
     parser.add_argument("audio", type=Path)
-    parser.add_argument("--url", default="ws://localhost:3003/v1/transcriptions/stream")
+    parser.add_argument("--url", default="wss://localhost:3003/v1/transcriptions/stream")
     parser.add_argument("--language", default="auto")
     parser.add_argument("--sample-rate", type=int, default=16000)
     parser.add_argument("--chunk-ms", type=int, default=560)
@@ -21,7 +22,13 @@ async def main() -> None:
     pcm = decode_f32le(args.audio, args.sample_rate)
     bytes_per_chunk = int(args.sample_rate * args.chunk_ms / 1000) * 4
 
-    async with websockets.connect(args.url, max_size=None) as websocket:
+    ssl_ctx = None
+    if args.url.startswith("wss"):
+        ssl_ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+        ssl_ctx.check_hostname = False
+        ssl_ctx.verify_mode = ssl.CERT_NONE
+
+    async with websockets.connect(args.url, max_size=None, ssl=ssl_ctx) as websocket:
         await websocket.send(
             json.dumps(
                 {

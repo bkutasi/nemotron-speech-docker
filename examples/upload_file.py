@@ -2,6 +2,7 @@
 import argparse
 import json
 import mimetypes
+import ssl
 import uuid
 from pathlib import Path
 from urllib import request
@@ -10,7 +11,7 @@ from urllib import request
 def main() -> None:
     parser = argparse.ArgumentParser(description="Upload one audio file to the ASR endpoint.")
     parser.add_argument("audio", type=Path)
-    parser.add_argument("--url", default="http://localhost:3003/v1/transcriptions")
+    parser.add_argument("--url", default="https://localhost:3003/v1/transcriptions")
     parser.add_argument("--language", default="auto")
     parser.add_argument("--chunk-ms", type=int, default=560)
     parser.add_argument("--use-vad", action="store_true")
@@ -25,7 +26,8 @@ def main() -> None:
         },
     )
     req = request.Request(args.url, data=body, headers={"Content-Type": content_type}, method="POST")
-    with request.urlopen(req, timeout=300) as response:
+    ctx = ssl._create_unverified_context() if args.url.startswith("https") else None
+    with request.urlopen(req, timeout=300, context=ctx) as response:
         payload = json.loads(response.read().decode("utf-8"))
 
     print(json.dumps(payload, indent=2, ensure_ascii=False))
