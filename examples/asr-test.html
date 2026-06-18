@@ -95,7 +95,15 @@
           <option value="1120">1120ms</option>
         </select>
       </label>
-      <label class="checkbox-label"><input type="checkbox" id="vadMic"> VAD</label>
+      <label class="checkbox-label"><input type="checkbox" id="vadMic" onchange="toggleVadSettings('mic')"> VAD</label>
+    </div>
+    <div class="controls" id="vadSettingsMic" style="display:none">
+      <label>VAD Threshold
+        <input type="number" id="vadThresholdMic" value="0.3" min="0.1" max="0.9" step="0.1" style="width:60px;background:var(--card);color:var(--text);border:1px solid var(--border);border-radius:6px;padding:0.38rem 0.5rem;font-size:0.85rem;font-family:inherit">
+      </label>
+      <label>Silence (ms)
+        <input type="number" id="vadSilenceMic" value="1000" min="100" max="10000" step="100" style="width:75px;background:var(--card);color:var(--text);border:1px solid var(--border);border-radius:6px;padding:0.38rem 0.5rem;font-size:0.85rem;font-family:inherit">
+      </label>
     </div>
     <div class="output" id="micOut"><span class="placeholder">Click Start and speak...</span></div>
     <div class="metrics" id="micMetrics"></div>
@@ -129,7 +137,15 @@
           <option value="1120">1120ms</option>
         </select>
       </label>
-      <label class="checkbox-label"><input type="checkbox" id="vadFile"> VAD</label>
+      <label class="checkbox-label"><input type="checkbox" id="vadFile" onchange="toggleVadSettings('file')"> VAD</label>
+    </div>
+    <div class="controls" id="vadSettingsFile" style="display:none">
+      <label>VAD Threshold
+        <input type="number" id="vadThresholdFile" value="0.3" min="0.1" max="0.9" step="0.1" style="width:60px;background:var(--card);color:var(--text);border:1px solid var(--border);border-radius:6px;padding:0.38rem 0.5rem;font-size:0.85rem;font-family:inherit">
+      </label>
+      <label>Silence (ms)
+        <input type="number" id="vadSilenceFile" value="1000" min="100" max="10000" step="100" style="width:75px;background:var(--card);color:var(--text);border:1px solid var(--border);border-radius:6px;padding:0.38rem 0.5rem;font-size:0.85rem;font-family:inherit">
+      </label>
     </div>
     <div class="file-info" id="fileInfo"></div>
     <div class="output" id="fileOut"><span class="placeholder">Choose an audio file...</span></div>
@@ -207,6 +223,12 @@ class PCMProcessor extends AudioWorkletProcessor {
 registerProcessor('pcm-processor', PCMProcessor);
 `;
 
+// --- VAD settings toggle ---
+function toggleVadSettings(tab) {
+  const el = document.getElementById('vadSettings' + (tab === 'mic' ? 'Mic' : 'File'));
+  if (el) el.style.display = el.style.display === 'none' ? 'flex' : 'none';
+}
+
 // --- Mic streaming ---
 let ws = null, audioCtx = null, workletNode = null, micStream = null, nativeRate = 0;
 let partialText = '';
@@ -238,11 +260,16 @@ async function startMic() {
 
   ws.onopen = () => {
     setStatus('Connected', '');
-    ws.send(JSON.stringify({
+    const cfg = {
       language: document.getElementById('langMic').value,
       chunk_ms: parseInt(document.getElementById('chunkMic').value),
       use_vad: document.getElementById('vadMic').checked
-    }));
+    };
+    if (cfg.use_vad) {
+      cfg.vad_threshold = parseFloat(document.getElementById('vadThresholdMic').value);
+      cfg.vad_silence_duration_ms = parseInt(document.getElementById('vadSilenceMic').value);
+    }
+    ws.send(JSON.stringify(cfg));
   };
   ws.onmessage = (ev) => {
     const msg = JSON.parse(ev.data);
@@ -377,7 +404,11 @@ async function uploadFile() {
   fd.append('file', f);
   fd.append('language', document.getElementById('langFile').value);
   fd.append('chunk_ms', document.getElementById('chunkFile').value);
-  if (document.getElementById('vadFile').checked) fd.append('use_vad', 'true');
+  if (document.getElementById('vadFile').checked) {
+    fd.append('use_vad', 'true');
+    fd.append('vad_threshold', document.getElementById('vadThresholdFile').value);
+    fd.append('vad_silence_duration_ms', document.getElementById('vadSilenceFile').value);
+  }
 
   try {
     const resp = await fetch('/v1/transcriptions', { method: 'POST', body: fd });

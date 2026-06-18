@@ -126,8 +126,15 @@ async def transcriptions(
     language: Annotated[str, Form()] = "auto",
     use_vad: Annotated[bool, Form()] = False,
     chunk_ms: Annotated[int, Form()] = settings.default_chunk_ms,
+    vad_threshold: Annotated[float | None, Form()] = None,
+    vad_silence_duration_ms: Annotated[int | None, Form()] = None,
+    vad_prefix_padding_ms: Annotated[int | None, Form()] = None,
 ) -> dict[str, Any]:
-    result = await _transcribe_uploaded_file(file=file, language=language, use_vad=use_vad, chunk_ms=chunk_ms)
+    result = await _transcribe_uploaded_file(
+        file=file, language=language, use_vad=use_vad, chunk_ms=chunk_ms,
+        vad_threshold=vad_threshold, vad_silence_duration_ms=vad_silence_duration_ms,
+        vad_prefix_padding_ms=vad_prefix_padding_ms,
+    )
     return {
         "text": result.text,
         "language": result.language,
@@ -151,8 +158,15 @@ async def openai_transcriptions(
     language: Annotated[str, Form()] = "auto",
     use_vad: Annotated[bool, Form()] = False,
     chunk_ms: Annotated[int, Form()] = settings.default_chunk_ms,
+    vad_threshold: Annotated[float | None, Form()] = None,
+    vad_silence_duration_ms: Annotated[int | None, Form()] = None,
+    vad_prefix_padding_ms: Annotated[int | None, Form()] = None,
 ) -> dict[str, str]:
-    result = await _transcribe_uploaded_file(file=file, language=language, use_vad=use_vad, chunk_ms=chunk_ms)
+    result = await _transcribe_uploaded_file(
+        file=file, language=language, use_vad=use_vad, chunk_ms=chunk_ms,
+        vad_threshold=vad_threshold, vad_silence_duration_ms=vad_silence_duration_ms,
+        vad_prefix_padding_ms=vad_prefix_padding_ms,
+    )
     return {"text": result.text}
 
 
@@ -161,6 +175,9 @@ async def _transcribe_uploaded_file(
     language: str = "auto",
     use_vad: bool = False,
     chunk_ms: int = settings.default_chunk_ms,
+    vad_threshold: float | None = None,
+    vad_silence_duration_ms: int | None = None,
+    vad_prefix_padding_ms: int | None = None,
 ) -> TranscriptionResult:
     content = await file.read()
     if not content:
@@ -172,6 +189,9 @@ async def _transcribe_uploaded_file(
             language=language,
             use_vad=use_vad,
             chunk_ms=chunk_ms,
+            vad_threshold=vad_threshold,
+            vad_silence_duration_ms=vad_silence_duration_ms,
+            vad_prefix_padding_ms=vad_prefix_padding_ms,
         )
     except UnsupportedLanguageError as exc:
         raise HTTPException(
@@ -199,6 +219,9 @@ async def transcription_stream(websocket: WebSocket) -> None:
     language = "auto"
     use_vad = False
     chunk_ms = settings.default_chunk_ms
+    vad_threshold: float | None = None
+    vad_silence_duration_ms: int | None = None
+    vad_prefix_padding_ms: int | None = None
 
     try:
         first = await websocket.receive()
@@ -207,6 +230,15 @@ async def transcription_stream(websocket: WebSocket) -> None:
             language = str(config.get("language", language))
             use_vad = bool(config.get("use_vad", use_vad))
             chunk_ms = int(config.get("chunk_ms", chunk_ms))
+            vad_threshold = config.get("vad_threshold")
+            if vad_threshold is not None:
+                vad_threshold = float(vad_threshold)
+            vad_silence_duration_ms = config.get("vad_silence_duration_ms")
+            if vad_silence_duration_ms is not None:
+                vad_silence_duration_ms = int(vad_silence_duration_ms)
+            vad_prefix_padding_ms = config.get("vad_prefix_padding_ms")
+            if vad_prefix_padding_ms is not None:
+                vad_prefix_padding_ms = int(vad_prefix_padding_ms)
             requested_sample_rate = config.get("sample_rate", engine.sample_rate)
             if requested_sample_rate != engine.sample_rate:
                 await websocket.send_json(
@@ -222,7 +254,12 @@ async def transcription_stream(websocket: WebSocket) -> None:
             await websocket.send_json({"event": "error", "message": "Expected config JSON or binary PCM audio"})
             return
 
-        stream = await engine.create_stream(language=language, use_vad=use_vad, chunk_ms=chunk_ms)
+        stream = await engine.create_stream(
+            language=language, use_vad=use_vad, chunk_ms=chunk_ms,
+            vad_threshold=vad_threshold,
+            vad_silence_duration_ms=vad_silence_duration_ms,
+            vad_prefix_padding_ms=vad_prefix_padding_ms,
+        )
         active_streams += 1
         await websocket.send_json(
             {

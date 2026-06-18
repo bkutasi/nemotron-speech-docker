@@ -166,21 +166,33 @@ class NemotronASR:
         language: str = "auto",
         use_vad: bool = False,
         chunk_ms: int = DEFAULT_CHUNK_MS,
+        vad_threshold: float | None = None,
+        vad_silence_duration_ms: int | None = None,
+        vad_prefix_padding_ms: int | None = None,
     ) -> TranscriptionResult:
         self._assert_ready()
         audio = await asyncio.to_thread(self._decode_audio_bytes, content, filename)
         assert self.sample_rate is not None
         duration = len(audio) / self.sample_rate
-        return await asyncio.to_thread(self._transcribe_audio, audio, duration, language, use_vad, chunk_ms)
+        return await asyncio.to_thread(
+            self._transcribe_audio, audio, duration, language, use_vad, chunk_ms,
+            vad_threshold, vad_silence_duration_ms, vad_prefix_padding_ms,
+        )
 
     async def create_stream(
         self,
         language: str = "auto",
         use_vad: bool = False,
         chunk_ms: int = DEFAULT_CHUNK_MS,
+        vad_threshold: float | None = None,
+        vad_silence_duration_ms: int | None = None,
+        vad_prefix_padding_ms: int | None = None,
     ) -> "ASRStream":
         self._assert_ready()
-        return ASRStream(self, language=language, use_vad=use_vad, chunk_ms=chunk_ms)
+        return ASRStream(self, language=language, use_vad=use_vad, chunk_ms=chunk_ms,
+                         vad_threshold=vad_threshold,
+                         vad_silence_duration_ms=vad_silence_duration_ms,
+                         vad_prefix_padding_ms=vad_prefix_padding_ms)
 
     def release_stream(self) -> None:
         pass
@@ -258,9 +270,17 @@ class NemotronASR:
         language: str,
         use_vad: bool,
         chunk_ms: int,
+        vad_threshold: float | None = None,
+        vad_silence_duration_ms: int | None = None,
+        vad_prefix_padding_ms: int | None = None,
     ) -> TranscriptionResult:
         language_id, language_name = self._language(language)
-        session = self._new_session(language_id=language_id, use_vad=use_vad)
+        session = self._new_session(
+            language_id=language_id, use_vad=use_vad,
+            vad_threshold=vad_threshold,
+            vad_silence_duration_ms=vad_silence_duration_ms,
+            vad_prefix_padding_ms=vad_prefix_padding_ms,
+        )
         chunk_samples = self._chunk_samples_for_ms(chunk_ms)
 
         stream_start = time.perf_counter()
@@ -309,13 +329,26 @@ class NemotronASR:
         assert self.sample_rate is not None
         return int(self.sample_rate * chunk_ms / 1000)
 
-    def _new_session(self, language_id: int, use_vad: bool) -> "GenerationSession":
+    def _new_session(
+        self,
+        language_id: int,
+        use_vad: bool,
+        vad_threshold: float | None = None,
+        vad_silence_duration_ms: int | None = None,
+        vad_prefix_padding_ms: int | None = None,
+    ) -> "GenerationSession":
         assert self.model is not None
         processor = og.StreamingProcessor(self.model)
         processor.set_option("use_vad", "false")
         if use_vad:
             try:
                 processor.set_option("use_vad", "true")
+                if vad_threshold is not None:
+                    processor.set_option("vad_threshold", str(vad_threshold))
+                if vad_silence_duration_ms is not None:
+                    processor.set_option("silence_duration_ms", str(vad_silence_duration_ms))
+                if vad_prefix_padding_ms is not None:
+                    processor.set_option("prefix_padding_ms", str(vad_prefix_padding_ms))
             except Exception:
                 processor.set_option("use_vad", "false")
 
@@ -373,14 +406,28 @@ class GenerationSession:
 
 
 class ASRStream:
-    def __init__(self, engine: NemotronASR, language: str, use_vad: bool, chunk_ms: int) -> None:
+    def __init__(
+        self,
+        engine: NemotronASR,
+        language: str,
+        use_vad: bool,
+        chunk_ms: int,
+        vad_threshold: float | None = None,
+        vad_silence_duration_ms: int | None = None,
+        vad_prefix_padding_ms: int | None = None,
+    ) -> None:
         self.engine = engine
         language_id, language_name = engine._language(language)
         self.language = language
         self.language_name = language_name
         self.chunk_ms = chunk_ms
         self.chunk_samples = engine._chunk_samples_for_ms(chunk_ms)
-        self.session = engine._new_session(language_id=language_id, use_vad=use_vad)
+        self.session = engine._new_session(
+            language_id=language_id, use_vad=use_vad,
+            vad_threshold=vad_threshold,
+            vad_silence_duration_ms=vad_silence_duration_ms,
+            vad_prefix_padding_ms=vad_prefix_padding_ms,
+        )
         self.started_at = time.perf_counter()
         self.samples_received = 0
         self.chunks_total = 0
