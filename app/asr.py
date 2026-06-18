@@ -138,7 +138,6 @@ class NemotronASR:
         self.model: og.Model | None = None
         self.sample_rate: int | None = None
         self.chunk_samples: int | None = None
-        self._lock = asyncio.Lock()
 
     @property
     def ready(self) -> bool:
@@ -166,8 +165,7 @@ class NemotronASR:
         audio = await asyncio.to_thread(self._decode_audio_bytes, content, filename)
         assert self.sample_rate is not None
         duration = len(audio) / self.sample_rate
-        async with self._lock:
-            return await asyncio.to_thread(self._transcribe_audio, audio, duration, language, use_vad, chunk_ms)
+        return await asyncio.to_thread(self._transcribe_audio, audio, duration, language, use_vad, chunk_ms)
 
     async def create_stream(
         self,
@@ -176,15 +174,10 @@ class NemotronASR:
         chunk_ms: int = DEFAULT_CHUNK_MS,
     ) -> "ASRStream":
         self._assert_ready()
-        await self._lock.acquire()
-        try:
-            return ASRStream(self, language=language, use_vad=use_vad, chunk_ms=chunk_ms)
-        except Exception:
-            self._lock.release()
-            raise
+        return ASRStream(self, language=language, use_vad=use_vad, chunk_ms=chunk_ms)
 
     def release_stream(self) -> None:
-        self._lock.release()
+        pass
 
     def _assert_ready(self) -> None:
         if not self.ready:

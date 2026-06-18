@@ -1,15 +1,16 @@
 services:
-  nemotron:
-    container_name: nemotron-speech-docker-cpu
-    image: nemotron-speech-docker-cpu
+  nemotron-asr:
+    container_name: nemotron-asr
+    image: nemotron-asr:cpu
     build: .
     ports:
-      - "${HOST_PORT:-8000}:8000"
+      - "${HOST_PORT:-3003}:8000"
     environment:
       MODEL_ID: onnx-community/nemotron-3.5-asr-streaming-0.6b-onnx-int4
       MODEL_DIR: /models/nemotron
       EXECUTION_PROVIDER: cpu
       CONFIG_PATH: /app/config.yaml
+      HF_HUB_DOWNLOAD_TIMEOUT: "60"
     volumes:
       - nemotron-models:/models
     restart: unless-stopped

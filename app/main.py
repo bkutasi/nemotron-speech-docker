@@ -1,22 +1,23 @@
 import asyncio
 import logging
 from contextlib import asynccontextmanager
+from pathlib import Path
 from typing import Annotated, Any
 
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile, WebSocket, WebSocketDisconnect
-from fastapi.responses import JSONResponse
+from fastapi.responses import FileResponse, JSONResponse
 
 from app.asr import (
     LANG_TO_ID,
     ModelNotReadyError,
     NemotronASR,
     SUPPORTED_CHUNK_MS,
+    TranscriptionResult,
     UnsupportedChunkSizeError,
     UnsupportedLanguageError,
     build_engine,
 )
 from app.config import AppConfig, load_config
-
 
 logger = logging.getLogger("uvicorn.error")
 settings: AppConfig = load_config()
@@ -26,6 +27,9 @@ engine: NemotronASR = build_engine(
     execution_provider=settings.execution_provider,
 )
 load_error: str | None = None
+active_streams = 0
+
+_STATIC_DIR = Path(__file__).resolve().parent.parent / "examples"
 
 
 @asynccontextmanager
@@ -52,9 +56,40 @@ async def lifespan(app: FastAPI):
 app = FastAPI(title="Nemotron 3.5 ASR ONNX INT4", version="0.1.0", lifespan=lifespan)
 
 
+@app.get("/")
+async def index():
+    return FileResponse(_STATIC_DIR / "asr-test.html", media_type="text/html")
+
+
 @app.get("/health")
-async def health() -> dict[str, str]:
-    return {"status": "ok"}
+async def health() -> dict[str, Any]:
+    return {
+        "status": "healthy" if engine.ready else "unhealthy",
+        "ok": engine.ready,
+        "default_model": engine.model_id,
+        "models": [engine.model_id],
+        "speedup": "n/a",
+    }
+
+
+@app.get("/status")
+async def status() -> dict[str, str]:
+    return {"status": "busy" if active_streams else "idle"}
+
+
+@app.get("/v1/models")
+async def models() -> dict[str, Any]:
+    return {
+        "object": "list",
+        "data": [
+            {
+                "created": 1700000000,
+                "id": engine.model_id,
+                "object": "model",
+                "owned_by": "onnx-community",
+            }
+        ],
+    }
 
 
 @app.get("/ready")
@@ -92,11 +127,46 @@ async def transcriptions(
     use_vad: Annotated[bool, Form()] = False,
     chunk_ms: Annotated[int, Form()] = settings.default_chunk_ms,
 ) -> dict[str, Any]:
+    result = await _transcribe_uploaded_file(file=file, language=language, use_vad=use_vad, chunk_ms=chunk_ms)
+    return {
+        "text": result.text,
+        "language": result.language,
+        "language_name": result.language_name,
+        "duration_seconds": result.duration_seconds,
+        "wall_seconds": result.wall_seconds,
+        "rtf": result.rtf,
+        "sample_rate": result.sample_rate,
+        "chunk_ms": result.chunk_ms,
+        "chunk_samples": result.chunk_samples,
+        "chunks_total": result.chunks_total,
+        "chunks_processed": result.chunks_processed,
+        "chunks_skipped": result.chunks_skipped,
+        "vad_enabled": result.vad_enabled,
+    }
+
+
+@app.post("/v1/audio/transcriptions")
+async def openai_transcriptions(
+    file: Annotated[UploadFile, File()],
+    language: Annotated[str, Form()] = "auto",
+    use_vad: Annotated[bool, Form()] = False,
+    chunk_ms: Annotated[int, Form()] = settings.default_chunk_ms,
+) -> dict[str, str]:
+    result = await _transcribe_uploaded_file(file=file, language=language, use_vad=use_vad, chunk_ms=chunk_ms)
+    return {"text": result.text}
+
+
+async def _transcribe_uploaded_file(
+    file: UploadFile,
+    language: str = "auto",
+    use_vad: bool = False,
+    chunk_ms: int = settings.default_chunk_ms,
+) -> TranscriptionResult:
     content = await file.read()
     if not content:
         raise HTTPException(status_code=400, detail="Uploaded audio file is empty")
     try:
-        result = await engine.transcribe_bytes(
+        return await engine.transcribe_bytes(
             content=content,
             filename=file.filename or "audio",
             language=language,
@@ -118,25 +188,12 @@ async def transcriptions(
     except Exception as exc:
         raise HTTPException(status_code=400, detail=f"Could not transcribe audio: {exc}") from exc
 
-    return {
-        "text": result.text,
-        "language": result.language,
-        "language_name": result.language_name,
-        "duration_seconds": result.duration_seconds,
-        "wall_seconds": result.wall_seconds,
-        "rtf": result.rtf,
-        "sample_rate": result.sample_rate,
-        "chunk_ms": result.chunk_ms,
-        "chunk_samples": result.chunk_samples,
-        "chunks_total": result.chunks_total,
-        "chunks_processed": result.chunks_processed,
-        "chunks_skipped": result.chunks_skipped,
-        "vad_enabled": result.vad_enabled,
-    }
-
 
 @app.websocket("/v1/transcriptions/stream")
+@app.websocket("/v1/audio/transcriptions/stream")
 async def transcription_stream(websocket: WebSocket) -> None:
+    global active_streams
+
     await websocket.accept()
     stream = None
     language = "auto"
@@ -166,6 +223,7 @@ async def transcription_stream(websocket: WebSocket) -> None:
             return
 
         stream = await engine.create_stream(language=language, use_vad=use_vad, chunk_ms=chunk_ms)
+        active_streams += 1
         await websocket.send_json(
             {
                 "event": "ready",
@@ -212,6 +270,7 @@ async def transcription_stream(websocket: WebSocket) -> None:
     finally:
         if stream is not None:
             stream.close()
+            active_streams = max(active_streams - 1, 0)
 
 
 def _parse_control(text: str) -> dict[str, Any]:

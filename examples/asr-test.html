@@ -1,0 +1,135 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Nemotron ASR Live Test</title>
+  <style>
+    body { font-family: system-ui, sans-serif; background: #1a1a2e; color: #eee; max-width: 700px; margin: 2rem auto; padding: 1rem; }
+    h1 { font-size: 1.3rem; }
+    .status { font-size: 0.85rem; color: #8be9fd; margin-bottom: 1rem; }
+    button { background: #50fa7b; color: #1a1a2e; border: none; border-radius: 6px; padding: 0.6rem 1.2rem; font-size: 0.95rem; cursor: pointer; margin-right: 0.5rem; }
+    button.stop { background: #ff5555; color: #fff; }
+    button:disabled { opacity: 0.4; cursor: default; }
+    select, input { background: #16213e; color: #eee; border: 1px solid #333; border-radius: 6px; padding: 0.4rem; font-size: 0.85rem; }
+    label { font-size: 0.8rem; color: #888; margin-right: 0.8rem; }
+    .controls { display: flex; align-items: center; gap: 0.5rem; margin-bottom: 1rem; flex-wrap: wrap; }
+    pre { background: #0f0f23; border: 1px solid #333; border-radius: 8px; padding: 1rem; min-height: 120px; white-space: pre-wrap; word-break: break-word; font-size: 0.95rem; line-height: 1.6; }
+    .partial { color: #6272a4; font-style: italic; }
+    .final { color: #f8f8f2; }
+  </style>
+</head>
+<body>
+  <h1>Nemotron ASR Live Transcription</h1>
+  <div class="status" id="status">Idle</div>
+  <div class="controls">
+    <button id="startBtn" onclick="start()">Start Recording</button>
+    <button id="stopBtn" class="stop" onclick="stop()" disabled>Stop</button>
+    <label>Language
+      <select id="lang">
+        <option value="auto">Auto-detect</option>
+        <option value="en">English</option>
+        <option value="es">Spanish</option>
+        <option value="fr">French</option>
+        <option value="de">German</option>
+        <option value="hi">Hindi</option>
+        <option value="zh-CN">Chinese</option>
+        <option value="ja">Japanese</option>
+      </select>
+    </label>
+  </div>
+  <pre id="transcript"><span class="partial">Transcription will appear here...</span></pre>
+
+<script>
+let ws = null;
+let mediaRecorder = null;
+let audioContext = null;
+let processor = null;
+let stream = null;
+let transcriptEl = document.getElementById('transcript');
+let statusEl = document.getElementById('status');
+let startBtn = document.getElementById('startBtn');
+let stopBtn = document.getElementById('stopBtn');
+
+function setStatus(msg) { statusEl.textContent = msg; }
+
+async function start() {
+  startBtn.disabled = true;
+  stopBtn.disabled = false;
+  setStatus('Requesting microphone...');
+  try {
+    stream = await navigator.mediaDevices.getUserMedia({ audio: { channelCount: 1, sampleRate: 16000 } });
+  } catch (e) {
+    setStatus('Microphone access denied: ' + e.message);
+    startBtn.disabled = false;
+    stopBtn.disabled = true;
+    return;
+  }
+
+  const wsUrl = (location.protocol === 'https:' ? 'wss://' : 'ws://') + location.host + '/v1/transcriptions/stream';
+  ws = new WebSocket(wsUrl);
+  ws.binaryType = 'arraybuffer';
+  transcriptEl.innerHTML = '<span class="partial"></span>';
+
+  ws.onopen = () => {
+    setStatus('Connected. Sending config...');
+    ws.send(JSON.stringify({ language: document.getElementById('lang').value, chunk_ms: 560 }));
+  };
+
+  ws.onmessage = (event) => {
+    const msg = JSON.parse(event.data);
+    if (msg.event === 'ready') {
+      setStatus('Streaming (sample_rate=' + msg.sample_rate + ')');
+      startAudio(msg.sample_rate);
+    } else if (msg.event === 'partial') {
+      transcriptEl.innerHTML = '<span class="partial">' + escapeHtml(msg.text) + '</span>';
+    } else if (msg.event === 'final') {
+      transcriptEl.innerHTML = '<span class="final">' + escapeHtml(msg.text) + '</span>';
+      setStatus('Done. RTF=' + (msg.rtf || 'n/a'));
+    } else if (msg.event === 'error') {
+      setStatus('Error: ' + msg.message);
+    }
+  };
+
+  ws.onerror = () => { setStatus('WebSocket error'); cleanup(); };
+  ws.onclose = () => { setStatus('Disconnected'); cleanup(); };
+}
+
+async function startAudio(targetRate) {
+  audioContext = new AudioContext({ sampleRate: targetRate });
+  const source = audioContext.createMediaStreamSource(stream);
+  processor = audioContext.createScriptProcessor(4096, 1, 1);
+  processor.onaudioprocess = (e) => {
+    if (!ws || ws.readyState !== WebSocket.OPEN) return;
+    const input = e.inputBuffer.getChannelData(0);
+    const pcm = new Float32Array(input);
+    ws.send(pcm.buffer);
+  };
+  source.connect(processor);
+  processor.connect(audioContext.destination);
+  setStatus('Recording...');
+}
+
+function stop() {
+  if (ws && ws.readyState === WebSocket.OPEN) {
+    ws.send(JSON.stringify({ event: 'end' }));
+  }
+  cleanup();
+}
+
+function cleanup() {
+  if (processor) { processor.disconnect(); processor = null; }
+  if (audioContext) { audioContext.close(); audioContext = null; }
+  if (stream) { stream.getTracks().forEach(t => t.stop()); stream = null; }
+  startBtn.disabled = false;
+  stopBtn.disabled = true;
+}
+
+function escapeHtml(s) {
+  const d = document.createElement('div');
+  d.textContent = s;
+  return d.innerHTML;
+}
+</script>
+</body>
+</html>

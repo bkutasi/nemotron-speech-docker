@@ -1,12 +1,13 @@
 FROM python:3.11-slim AS base
 
-# Image name: nemotron-speech-docker-cpu
+# Image name: nemotron-asr:cpu
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     MODEL_ID=onnx-community/nemotron-3.5-asr-streaming-0.6b-onnx-int4 \
     MODEL_DIR=/models/nemotron \
-    EXECUTION_PROVIDER=cpu
+    EXECUTION_PROVIDER=cpu \
+    HF_HUB_DOWNLOAD_TIMEOUT=60
 
 WORKDIR /app
 
