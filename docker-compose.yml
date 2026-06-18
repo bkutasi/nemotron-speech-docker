@@ -11,7 +11,6 @@ services:
       EXECUTION_PROVIDER: cpu
       CONFIG_PATH: /app/config.yaml
       HF_HUB_DOWNLOAD_TIMEOUT: "60"
-      USE_SSL: "true"
     volumes:
       - nemotron-models:/models
     restart: unless-stopped

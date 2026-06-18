@@ -11,11 +11,19 @@
     .container{max-width:680px;margin:0 auto}
     .header{display:flex;align-items:center;gap:0.6rem;margin-bottom:1.2rem}
     .header h1{font-size:1.15rem;font-weight:600;margin:0}
-    .header .dot{width:10px;height:10px;border-radius:50%;background:var(--muted);flex-shrink:0}
-    .header .dot.live{background:var(--green);animation:pulse 1.5s infinite}
-    .header .dot.err{background:var(--red)}
+    .dot{width:10px;height:10px;border-radius:50%;background:var(--muted);flex-shrink:0;transition:background 0.2s}
+    .dot.live{background:var(--green);animation:pulse 1.5s infinite}
+    .dot.err{background:var(--red)}
     @keyframes pulse{0%,100%{opacity:1}50%{opacity:0.4}}
     .status{font-size:0.8rem;color:var(--muted);margin-bottom:1rem}
+
+    /* Audio level bar */
+    .level-bar{height:6px;background:var(--card);border:1px solid var(--border);border-radius:3px;overflow:hidden;margin-bottom:1rem;transition:opacity 0.3s}
+    .level-bar.idle{opacity:0.3}
+    .level-fill{height:100%;width:0%;background:var(--green);border-radius:2px;transition:width 0.05s linear,background 0.1s}
+    .level-fill.warm{background:var(--yellow)}
+    .level-fill.hot{background:var(--red)}
+
     .tabs{display:flex;gap:0;border-bottom:1px solid var(--border);margin-bottom:1.2rem}
     .tab{padding:0.55rem 1rem;border:none;background:none;color:var(--muted);font-size:0.88rem;cursor:pointer;border-bottom:2px solid transparent;font-family:inherit}
     .tab.active{color:var(--text);border-bottom-color:var(--accent)}
@@ -37,9 +45,9 @@
     .output .partial{color:var(--muted)}
     .output .final{color:var(--text)}
     .output .placeholder{color:var(--muted);font-style:italic}
-    .warn{background:#1c1208;border:1px solid var(--yellow);color:var(--yellow);border-radius:6px;padding:0.5rem 0.8rem;font-size:0.8rem;margin-bottom:0.8rem}
     .metrics{display:flex;gap:1rem;margin-top:0.6rem;font-size:0.78rem;color:var(--muted)}
     .metrics span{font-family:ui-monospace,monospace}
+    .note{font-size:0.75rem;color:var(--muted);margin-top:0.4rem}
   </style>
 </head>
 <body>
@@ -50,8 +58,8 @@
   </div>
   <div class="status" id="status">Ready</div>
 
-  <div id="sslWarn" class="warn" style="display:none">
-    Microphone requires HTTPS or localhost. File upload works on any connection.
+  <div class="level-bar idle" id="levelBar">
+    <div class="level-fill" id="levelFill"></div>
   </div>
 
   <div class="tabs">
@@ -80,6 +88,7 @@
     </div>
     <div class="output" id="micOut"><span class="placeholder">Click Start and speak...</span></div>
     <div class="metrics" id="micMetrics"></div>
+    <div class="note">Mic works on localhost. For LAN access use the File Upload tab.</div>
   </div>
 
   <div id="panel-file" class="panel">
@@ -109,8 +118,6 @@
 
 <script>
 const TARGET_RATE = 16000;
-let isSecure = location.protocol === 'https:' || location.hostname === 'localhost' || location.hostname === '127.0.0.1';
-if (!isSecure) document.getElementById('sslWarn').style.display = 'block';
 
 // --- Tab switching ---
 function switchTab(name) {
@@ -127,17 +134,57 @@ function setStatus(msg, state) {
   dot.className = 'dot' + (state ? ' ' + state : '');
 }
 
+// --- Audio level bar ---
+const levelBar = document.getElementById('levelBar');
+const levelFill = document.getElementById('levelFill');
+let analyser = null;
+let rafId = null;
+
+function startLevelMonitor(ctx, source) {
+  analyser = ctx.createAnalyser();
+  analyser.fftSize = 256;
+  source.connect(analyser);
+  levelBar.classList.remove('idle');
+  updateLevel();
+}
+
+function updateLevel() {
+  if (!analyser) return;
+  const buf = new Uint8Array(analyser.frequencyBinCount);
+  analyser.getByteFrequencyData(buf);
+  let sum = 0;
+  for (let i = 0; i < buf.length; i++) sum += buf[i];
+  const avg = sum / buf.length;
+  const pct = Math.min(100, (avg / 80) * 100);
+  levelFill.style.width = pct + '%';
+  levelFill.className = 'level-fill' + (pct > 65 ? ' hot' : pct > 35 ? ' warm' : '');
+  rafId = requestAnimationFrame(updateLevel);
+}
+
+function stopLevelMonitor() {
+  if (rafId) cancelAnimationFrame(rafId);
+  rafId = null;
+  analyser = null;
+  levelBar.classList.add('idle');
+  levelFill.style.width = '0%';
+  levelFill.className = 'level-fill';
+}
+
 // --- Mic streaming ---
 let ws = null, audioCtx = null, processor = null, micStream = null, nativeRate = 0;
+let partialText = '';
 const startBtn = document.getElementById('startBtn');
 const stopBtn = document.getElementById('stopBtn');
 const micOut = document.getElementById('micOut');
 const micMetrics = document.getElementById('micMetrics');
 
 async function startMic() {
-  if (!isSecure) { setStatus('HTTPS required for mic access on LAN', 'err'); return; }
   startBtn.disabled = true; stopBtn.disabled = false;
   setStatus('Requesting microphone...', '');
+  partialText = '';
+  micOut.innerHTML = '<span class="placeholder">Connecting...</span>';
+  micMetrics.innerHTML = '';
+
   try {
     micStream = await navigator.mediaDevices.getUserMedia({ audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true } });
   } catch (e) {
@@ -149,7 +196,6 @@ async function startMic() {
   const wsUrl = (location.protocol === 'https:' ? 'wss://' : 'ws://') + location.host + '/v1/transcriptions/stream';
   ws = new WebSocket(wsUrl);
   ws.binaryType = 'arraybuffer';
-  micOut.innerHTML = '<span class="placeholder">Connecting...</span>';
 
   ws.onopen = () => {
     setStatus('Connected', '');
@@ -160,7 +206,9 @@ async function startMic() {
     if (msg.event === 'ready') {
       startAudio(msg.sample_rate || TARGET_RATE);
     } else if (msg.event === 'partial') {
-      micOut.innerHTML = '<span class="partial">' + esc(msg.text) + '</span>';
+      // Accumulate partial text so the transcript grows
+      partialText += msg.text;
+      micOut.innerHTML = '<span class="partial">' + esc(partialText) + '</span>';
     } else if (msg.event === 'final') {
       micOut.innerHTML = '<span class="final">' + esc(msg.text) + '</span>';
       setStatus('Done', '');
@@ -180,8 +228,11 @@ async function startAudio(serverRate) {
   setStatus('Recording @ ' + nativeRate + 'Hz -> ' + serverRate + 'Hz', 'live');
 
   const source = audioCtx.createMediaStreamSource(micStream);
-  processor = audioCtx.createScriptProcessor(4096, 1, 1);
 
+  // Audio level monitor
+  startLevelMonitor(audioCtx, source);
+
+  processor = audioCtx.createScriptProcessor(4096, 1, 1);
   processor.onaudioprocess = (e) => {
     if (!ws || ws.readyState !== WebSocket.OPEN) return;
     const input = e.inputBuffer.getChannelData(0);
@@ -189,7 +240,7 @@ async function startAudio(serverRate) {
     ws.send(pcm.buffer);
   };
 
-  // Mute output to prevent feedback echo, but ScriptProcessor needs a connection to fire
+  // Mute output to prevent echo, but ScriptProcessor needs connection to fire
   const mute = audioCtx.createGain();
   mute.gain.value = 0;
   source.connect(processor);
@@ -203,6 +254,7 @@ function stopMic() {
 }
 
 function cleanupMic() {
+  stopLevelMonitor();
   if (processor) { processor.disconnect(); processor = null; }
   if (audioCtx) { audioCtx.close(); audioCtx = null; }
   if (micStream) { micStream.getTracks().forEach(t => t.stop()); micStream = null; }

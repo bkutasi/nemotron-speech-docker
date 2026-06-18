@@ -11,7 +11,7 @@ from urllib import request
 def main() -> None:
     parser = argparse.ArgumentParser(description="Upload one audio file to the ASR endpoint.")
     parser.add_argument("audio", type=Path)
-    parser.add_argument("--url", default="https://localhost:3003/v1/transcriptions")
+    parser.add_argument("--url", default="http://localhost:3003/v1/transcriptions")
     parser.add_argument("--language", default="auto")
     parser.add_argument("--chunk-ms", type=int, default=560)
     parser.add_argument("--use-vad", action="store_true")

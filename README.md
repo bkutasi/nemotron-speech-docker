@@ -10,46 +10,37 @@ docker compose up -d --build
 
 Compose runs service/container/image `nemotron-asr:cpu` on `localhost:3003` by default.
 
-HTTPS is enabled by default (`USE_SSL=true`) with a self-signed certificate. This is required for microphone access from LAN browsers. API calls use `curl -k` or `verify=False`.
-
 The first boot downloads the model into the Docker volume. Startup also runs the configured MP3 smoke tests and logs duration, wall time, realtime factor, and a transcript preview.
 
 Health checks:
 
 ```bash
-curl -k https://localhost:3003/health
-curl -k https://localhost:3003/ready
-```
-
-To disable HTTPS (HTTP only):
-
-```yaml
-environment:
-  USE_SSL: "false"
+curl http://localhost:3003/health
+curl http://localhost:3003/ready
 ```
 
 ## Live Transcription Test
 
-Open `https://localhost:3003/` in a browser. Accept the self-signed certificate warning.
+Open `http://localhost:3003/` in a browser.
 
-- Live Mic: Click Start, allow microphone access, and speak. Partial transcripts stream in real time.
+- Live Mic: Click Start, allow microphone access, and speak. Partial transcripts accumulate in real time. An audio level bar shows mic input.
 - File Upload: Choose an audio file and click Transcribe.
 
-From LAN, use `https://<host-ip>:3003/` -- you must accept the certificate warning in each browser.
+Mic recording works on localhost. For LAN access, use the File Upload tab.
 
 ## Examples
 
 File upload:
 
 ```bash
-python examples/upload_file.py tests/audio/sample-0.mp3 --language en --url https://localhost:3003/v1/transcriptions
+python examples/upload_file.py tests/audio/sample-0.mp3 --language en
 ```
 
 Streaming:
 
 ```bash
 pip install -r examples/requirements.txt
-python examples/streaming.py tests/audio/sample-0.mp3 --language en --url wss://localhost:3003/v1/transcriptions/stream
+python examples/streaming.py tests/audio/sample-0.mp3 --language en
 ```
 
 ## Endpoints
@@ -78,5 +69,4 @@ EXECUTION_PROVIDER
 DEFAULT_CHUNK_MS
 STARTUP_SELF_TEST
 CONFIG_PATH
-USE_SSL
 ```

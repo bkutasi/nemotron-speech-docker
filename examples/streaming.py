@@ -12,7 +12,7 @@ import websockets
 async def main() -> None:
     parser = argparse.ArgumentParser(description="Stream an audio file to the ASR WebSocket endpoint.")
     parser.add_argument("audio", type=Path)
-    parser.add_argument("--url", default="wss://localhost:3003/v1/transcriptions/stream")
+    parser.add_argument("--url", default="ws://localhost:3003/v1/transcriptions/stream")
     parser.add_argument("--language", default="auto")
     parser.add_argument("--sample-rate", type=int, default=16000)
     parser.add_argument("--chunk-ms", type=int, default=560)
