@@ -5,6 +5,7 @@ services:
     build: .
     ports:
       - "${HOST_PORT:-3003}:8000"
+      - "${HTTPS_PORT:-3004}:8443"
     environment:
       MODEL_ID: onnx-community/nemotron-3.5-asr-streaming-0.6b-onnx-int4
       MODEL_DIR: /models/nemotron

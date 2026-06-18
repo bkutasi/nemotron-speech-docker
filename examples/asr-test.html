@@ -17,7 +17,6 @@
     @keyframes pulse{0%,100%{opacity:1}50%{opacity:0.4}}
     .status{font-size:0.8rem;color:var(--muted);margin-bottom:1rem}
 
-    /* Audio level bar */
     .level-bar{height:6px;background:var(--card);border:1px solid var(--border);border-radius:3px;overflow:hidden;margin-bottom:1rem;transition:opacity 0.3s}
     .level-bar.idle{opacity:0.3}
     .level-fill{height:100%;width:0%;background:var(--green);border-radius:2px;transition:width 0.05s linear,background 0.1s}
@@ -88,7 +87,7 @@
     </div>
     <div class="output" id="micOut"><span class="placeholder">Click Start and speak...</span></div>
     <div class="metrics" id="micMetrics"></div>
-    <div class="note">Mic works on localhost. For LAN access use the File Upload tab.</div>
+    <div class="note">Mic needs HTTPS or localhost. Use port 3004 (HTTPS) for mic from LAN, or 3003 (HTTP) on localhost.</div>
   </div>
 
   <div id="panel-file" class="panel">
@@ -170,9 +169,27 @@ function stopLevelMonitor() {
   levelFill.className = 'level-fill';
 }
 
+// --- AudioWorklet processor (loaded via Blob URL, no deprecation warning) ---
+const WORKLET_CODE = `
+class PCMProcessor extends AudioWorkletProcessor {
+  process(inputs) {
+    const ch = inputs[0];
+    if (ch && ch[0]) {
+      const copy = new Float32Array(ch[0].length);
+      copy.set(ch[0]);
+      this.port.postMessage(copy, [copy.buffer]);
+    }
+    return true;
+  }
+}
+registerProcessor('pcm-processor', PCMProcessor);
+`;
+
 // --- Mic streaming ---
-let ws = null, audioCtx = null, processor = null, micStream = null, nativeRate = 0;
+let ws = null, audioCtx = null, workletNode = null, micStream = null, nativeRate = 0;
 let partialText = '';
+let sendBuffer = [];
+const SEND_THRESHOLD = 4096;
 const startBtn = document.getElementById('startBtn');
 const stopBtn = document.getElementById('stopBtn');
 const micOut = document.getElementById('micOut');
@@ -206,7 +223,6 @@ async function startMic() {
     if (msg.event === 'ready') {
       startAudio(msg.sample_rate || TARGET_RATE);
     } else if (msg.event === 'partial') {
-      // Accumulate partial text so the transcript grows
       partialText += msg.text;
       micOut.innerHTML = '<span class="partial">' + esc(partialText) + '</span>';
     } else if (msg.event === 'final') {
@@ -229,33 +245,61 @@ async function startAudio(serverRate) {
 
   const source = audioCtx.createMediaStreamSource(micStream);
 
-  // Audio level monitor
+  // Level monitor
   startLevelMonitor(audioCtx, source);
 
-  processor = audioCtx.createScriptProcessor(4096, 1, 1);
-  processor.onaudioprocess = (e) => {
+  // Load AudioWorklet
+  const blob = new Blob([WORKLET_CODE], { type: 'application/javascript' });
+  const workletUrl = URL.createObjectURL(blob);
+  await audioCtx.audioWorklet.addModule(workletUrl);
+  URL.revokeObjectURL(workletUrl);
+
+  workletNode = new AudioWorkletNode(audioCtx, 'pcm-processor');
+  sendBuffer = [];
+
+  workletNode.port.onmessage = (e) => {
     if (!ws || ws.readyState !== WebSocket.OPEN) return;
-    const input = e.inputBuffer.getChannelData(0);
-    const pcm = downsample(input, nativeRate, serverRate);
-    ws.send(pcm.buffer);
+    sendBuffer.push(e.data);
+    const total = sendBuffer.reduce((s, c) => s + c.length, 0);
+    if (total >= SEND_THRESHOLD) {
+      const merged = new Float32Array(total);
+      let offset = 0;
+      for (const c of sendBuffer) { merged.set(c, offset); offset += c.length; }
+      sendBuffer = [];
+      const pcm = downsample(merged, nativeRate, serverRate);
+      if (pcm.length > 0) ws.send(pcm.buffer);
+    }
   };
 
-  // Mute output to prevent echo, but ScriptProcessor needs connection to fire
+  // Connect: source -> worklet -> muted gain -> destination (keeps graph alive, no echo)
   const mute = audioCtx.createGain();
   mute.gain.value = 0;
-  source.connect(processor);
-  processor.connect(mute);
+  source.connect(workletNode);
+  workletNode.connect(mute);
   mute.connect(audioCtx.destination);
 }
 
 function stopMic() {
-  if (ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ event: 'end' }));
+  // Flush remaining buffer
+  if (ws && ws.readyState === WebSocket.OPEN && sendBuffer.length > 0) {
+    const total = sendBuffer.reduce((s, c) => s + c.length, 0);
+    const merged = new Float32Array(total);
+    let offset = 0;
+    for (const c of sendBuffer) { merged.set(c, offset); offset += c.length; }
+    sendBuffer = [];
+    const serverRate = TARGET_RATE;
+    const pcm = downsample(merged, nativeRate, serverRate);
+    if (pcm.length > 0) ws.send(pcm.buffer);
+    ws.send(JSON.stringify({ event: 'end' }));
+  } else if (ws && ws.readyState === WebSocket.OPEN) {
+    ws.send(JSON.stringify({ event: 'end' }));
+  }
   cleanupMic();
 }
 
 function cleanupMic() {
   stopLevelMonitor();
-  if (processor) { processor.disconnect(); processor = null; }
+  if (workletNode) { workletNode.disconnect(); workletNode = null; }
   if (audioCtx) { audioCtx.close(); audioCtx = null; }
   if (micStream) { micStream.getTracks().forEach(t => t.stop()); micStream = null; }
   startBtn.disabled = false; stopBtn.disabled = true;

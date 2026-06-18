@@ -8,7 +8,9 @@ FastAPI wrapper for `onnx-community/nemotron-3.5-asr-streaming-0.6b-onnx-int4` u
 docker compose up -d --build
 ```
 
-Compose runs service/container/image `nemotron-asr:cpu` on `localhost:3003` by default.
+Two ports are exposed:
+- **HTTP 3003** -- API access (curl, scripts, file upload)
+- **HTTPS 3004** -- Browser UI with microphone (self-signed cert)
 
 The first boot downloads the model into the Docker volume. Startup also runs the configured MP3 smoke tests and logs duration, wall time, realtime factor, and a transcript preview.
 
@@ -16,17 +18,17 @@ Health checks:
 
 ```bash
 curl http://localhost:3003/health
-curl http://localhost:3003/ready
+curl -k https://localhost:3004/health
 ```
 
 ## Live Transcription Test
 
-Open `http://localhost:3003/` in a browser.
+Open `https://localhost:3004/` in a browser. Accept the self-signed certificate warning.
 
 - Live Mic: Click Start, allow microphone access, and speak. Partial transcripts accumulate in real time. An audio level bar shows mic input.
 - File Upload: Choose an audio file and click Transcribe.
 
-Mic recording works on localhost. For LAN access, use the File Upload tab.
+For LAN access, open `https://<host-ip>:3004/` from a local browser (not X11 forwarded -- mic must be on the machine running the browser).
 
 ## Examples
 
