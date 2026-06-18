@@ -15,16 +15,21 @@ def main() -> None:
     parser.add_argument("--language", default="auto")
     parser.add_argument("--chunk-ms", type=int, default=560)
     parser.add_argument("--use-vad", action="store_true")
+    parser.add_argument("--vad-threshold", type=float, default=None, help="VAD sensitivity 0.1-0.9 (lower=more sensitive)")
+    parser.add_argument("--vad-silence-ms", type=int, default=None, help="Silence duration before VAD ends speech")
     args = parser.parse_args()
 
-    body, content_type = build_multipart(
-        file_path=args.audio,
-        fields={
-            "language": args.language,
-            "chunk_ms": str(args.chunk_ms),
-            "use_vad": str(args.use_vad).lower(),
-        },
-    )
+    fields = {
+        "language": args.language,
+        "chunk_ms": str(args.chunk_ms),
+        "use_vad": str(args.use_vad).lower(),
+    }
+    if args.vad_threshold is not None:
+        fields["vad_threshold"] = str(args.vad_threshold)
+    if args.vad_silence_ms is not None:
+        fields["vad_silence_duration_ms"] = str(args.vad_silence_ms)
+
+    body, content_type = build_multipart(file_path=args.audio, fields=fields)
     req = request.Request(args.url, data=body, headers={"Content-Type": content_type}, method="POST")
     ctx = ssl._create_unverified_context() if args.url.startswith("https") else None
     with request.urlopen(req, timeout=300, context=ctx) as response:

@@ -17,6 +17,8 @@ async def main() -> None:
     parser.add_argument("--sample-rate", type=int, default=16000)
     parser.add_argument("--chunk-ms", type=int, default=560)
     parser.add_argument("--use-vad", action="store_true")
+    parser.add_argument("--vad-threshold", type=float, default=None, help="VAD sensitivity 0.1-0.9")
+    parser.add_argument("--vad-silence-ms", type=int, default=None, help="Silence ms before VAD ends speech")
     args = parser.parse_args()
 
     pcm = decode_f32le(args.audio, args.sample_rate)
@@ -28,18 +30,20 @@ async def main() -> None:
         ssl_ctx.check_hostname = False
         ssl_ctx.verify_mode = ssl.CERT_NONE
 
+    config = {
+        "language": args.language,
+        "sample_rate": args.sample_rate,
+        "chunk_ms": args.chunk_ms,
+        "use_vad": args.use_vad,
+        "format": "f32le",
+    }
+    if args.vad_threshold is not None:
+        config["vad_threshold"] = args.vad_threshold
+    if args.vad_silence_ms is not None:
+        config["vad_silence_duration_ms"] = args.vad_silence_ms
+
     async with websockets.connect(args.url, max_size=None, ssl=ssl_ctx) as websocket:
-        await websocket.send(
-            json.dumps(
-                {
-                    "language": args.language,
-                    "sample_rate": args.sample_rate,
-                    "chunk_ms": args.chunk_ms,
-                    "use_vad": args.use_vad,
-                    "format": "f32le",
-                }
-            )
-        )
+        await websocket.send(json.dumps(config))
         print(await websocket.recv())
 
         for index in range(0, len(pcm), bytes_per_chunk):
