@@ -8,7 +8,7 @@ FastAPI wrapper for `onnx-community/nemotron-3.5-asr-streaming-0.6b-onnx-int4` u
 docker compose up -d --build
 ```
 
-Two ports are exposed:
+Three ports are exposed:
 - **HTTP 3003** -- API access (curl, scripts, file upload)
 - **HTTPS 3004** -- Browser UI with microphone (self-signed cert)
 - **HTTP 3005** -- Parakeet-v3 offline batch sidecar (`POST /transcribe`)
@@ -110,15 +110,21 @@ curl -X POST http://localhost:3005/transcribe -F file=@tests/audio/sample-0.mp3 
 # -> {"text": ..., "language": "en", "duration_s": 10.04, "rtf": 0.02, "engine": "parakeet-v3-int8"}
 ```
 
-For local, tmux-scoped omp dictation on the host running this sidecar, forward the microphone's PulseAudio server to `tcp:localhost:4713`, then run from a **separate** tmux pane:
+For local, tmux-scoped omp dictation on the host running this sidecar, the mic tunnel must already reach `tcp:localhost:4713`. Run from a **separate** tmux pane:
 
 ```bash
 cd vad-dictate
-./vad_omp.sh --list                   # identify the omp pane, not this shell
-PULSE_SERVER=tcp:localhost:4713 VAD_DEVICE="$(PULSE_SERVER=tcp:localhost:4713 pactl get-default-source)" ./vad_omp.sh %2
+./vad_omp.sh --list   # identify the omp pane, not this shell
+./vad_omp.sh %2       # replace %2 with the live omp pane ID
 ```
 
-Replace `%2` with the live omp pane ID. The daemon inserts transcribed text without pressing Enter; Ctrl-C stops it. It stops if the chosen omp process exits. `touch ~/.vad-paused` pauses insertion; `rm ~/.vad-paused` resumes it. `vad-dictate/*.log` contains transcribed speech and is gitignored. F1 recording is independent: pause the daemon before using it.
+The daemon inserts transcribed text without pressing Enter; Ctrl-C stops it. It exits when the pinned pane's omp process dies and never retargets. `touch ~/.vad-paused` pauses insertion; `rm ~/.vad-paused` resumes. `vad-dictate/*.log` holds transcribed speech and is gitignored. Pause the daemon before F1 recording or text interleaves.
+
+If the default tunneled source is wrong, use `PULSE_SERVER=tcp:localhost:4713 pactl list sources short` to find the mic name, then override it:
+
+```bash
+VAD_DEVICE="<mic-source-name>" ./vad_omp.sh %2
+```
 
 ## Endpoints
 

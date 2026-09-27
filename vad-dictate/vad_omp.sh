@@ -30,7 +30,7 @@ find_all_omp_panes() {
       if [ -n "$pane" ]; then echo "$pane pid=$child"; break; fi
       p=$(ps -o ppid= -p "$p" 2>/dev/null | tr -d ' ')
     done
-  done | awk '{print $1}' | sort -u
+  done | awk '{print $1}' | sort -Vu
 }
 
 resolve_auto() {
@@ -65,10 +65,20 @@ validate_target() {
 }
 
 if [ "${1:-}" = "--list" ]; then
+  printf '%-6s %-7s %s\n' PANE STATE SESSION
   find_all_omp_panes | while read -r pane; do
-    tmux display-message -t "$pane" -p "#[TARGET] $pane active=#{pane_active} cmd=#{pane_current_command} title=#{pane_title}" 2>&1 || echo "$pane (gone)"
+    title=$(tmux display-message -t "$pane" -p '#{pane_title}' 2>/dev/null) || continue
+    title=${title#π }
+    if [[ $title == [⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏]' '* ]]; then
+      state=working
+      title=${title#? }
+    else
+      state=idle
+      title=${title#> }
+    fi
+    printf '%-6s %-7s %s\n' "$pane" "$state" "$title"
   done
-  echo "self=$SELF win=$SELF_WIN"
+  [ -z "$SELF" ] || printf '\nCurrent pane: %s\n' "$SELF"
   exit 0
 fi
 exec 9>"$LOCK"
@@ -84,7 +94,7 @@ trap cleanup INT TERM
 BACKOFF=5
 while true; do
   if [ -z "$PANE" ]; then
-    PANE=$(resolve_auto) || { echo "vad_omp: omp not running, exiting"; cleanup; }
+    PANE=$(resolve_auto) || { echo "vad_omp: omp not running, exiting" >&2; exit 1; }
   fi
   validate_target "$PANE" || {
     if [ "$FIXED" -eq 1 ]; then echo "vad_omp: bad target, exiting (no retarget on explicit pane)"; exit 1; fi
