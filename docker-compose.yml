@@ -13,8 +13,44 @@ services:
       CONFIG_PATH: /app/config.yaml
       HF_HUB_DOWNLOAD_TIMEOUT: "60"
     volumes:
-      - nemotron-models:/models
+      - ./nemotron-models:/models
     restart: unless-stopped
-
-volumes:
-  nemotron-models:
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    deploy:
+      resources:
+        limits:
+          memory: 4G
+        reservations:
+          memory: 512M
+  parakeet-asr:
+    container_name: parakeet-asr
+    image: parakeet-asr:cpu
+    build: ./parakeet
+    ports:
+      - "${PARAKEET_PORT:-3005}:8000"
+    volumes:
+      - ./parakeet-models:/app/models
+    environment:
+      OMP_NUM_THREADS: "4"
+    restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    deploy:
+      resources:
+        limits:
+          memory: 3G
+        reservations:
+          memory: 1G
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 120s
