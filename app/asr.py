@@ -95,6 +95,7 @@ LANG_TO_ID: dict[str, tuple[int, str]] = {
 
 SUPPORTED_CHUNK_MS = (80, 160, 320, 560, 1120)
 DEFAULT_CHUNK_MS = 560
+FALLBACK_CHUNK_MS = (560, 320, 160, 80, 1120)
 
 # The Nemotron vocab includes language-tag tokens (e.g. <en-US>, <de-DE>) and
 # other special tokens (<blank>, <unk>) that the model may emit during decoding.
@@ -174,10 +175,22 @@ class NemotronASR:
         audio = await asyncio.to_thread(self._decode_audio_bytes, content, filename)
         assert self.sample_rate is not None
         duration = len(audio) / self.sample_rate
-        return await asyncio.to_thread(
+        result = await asyncio.to_thread(
             self._transcribe_audio, audio, duration, language, use_vad, chunk_ms,
             vad_threshold, vad_silence_duration_ms, vad_prefix_padding_ms,
         )
+        if result.text.strip():
+            return result
+        for alt_ms in FALLBACK_CHUNK_MS:
+            if alt_ms == chunk_ms:
+                continue
+            retry = await asyncio.to_thread(
+                self._transcribe_audio, audio, duration, language, use_vad, alt_ms,
+                vad_threshold, vad_silence_duration_ms, vad_prefix_padding_ms,
+            )
+            if retry.text.strip():
+                return retry
+        return result
 
     async def create_stream(
         self,
@@ -263,6 +276,16 @@ class NemotronASR:
         completed = subprocess.run(command, check=True, capture_output=True)
         return np.frombuffer(completed.stdout, dtype=np.float32).copy(), self.sample_rate
 
+    @staticmethod
+    def _fit_chunk(chunk: np.ndarray, chunk_samples: int) -> np.ndarray:
+        """Zero-pad partial chunks to the model's fixed chunk size."""
+        chunk = np.asarray(chunk, dtype=np.float32)
+        if chunk.size >= chunk_samples:
+            return chunk[:chunk_samples]
+        out = np.zeros(chunk_samples, dtype=np.float32)
+        out[: chunk.size] = chunk
+        return out
+
     def _transcribe_audio(
         self,
         audio: np.ndarray,
@@ -282,6 +305,22 @@ class NemotronASR:
             vad_prefix_padding_ms=vad_prefix_padding_ms,
         )
         chunk_samples = self._chunk_samples_for_ms(chunk_ms)
+        if audio.size == 0:
+            return TranscriptionResult(
+                text="",
+                language=language,
+                language_name=language_name,
+                duration_seconds=duration,
+                wall_seconds=0.0,
+                rtf=None,
+                sample_rate=self.sample_rate or 0,
+                chunk_ms=chunk_ms,
+                chunk_samples=chunk_samples,
+                chunks_total=0,
+                chunks_processed=0,
+                chunks_skipped=0,
+                vad_enabled=session.vad_enabled,
+            )
 
         stream_start = time.perf_counter()
         text = ""
@@ -289,8 +328,12 @@ class NemotronASR:
         chunks_processed = 0
         chunks_skipped = 0
 
-        for i in range(0, len(audio), chunk_samples):
-            chunk = audio[i : i + chunk_samples].astype(np.float32)
+        padded = audio.astype(np.float32)
+        if padded.size < chunk_samples:
+            padded = self._fit_chunk(padded, chunk_samples)
+
+        for i in range(0, len(padded), chunk_samples):
+            chunk = self._fit_chunk(padded[i : i + chunk_samples], chunk_samples)
             chunks_total += 1
             token_text, processed = session.process_chunk(chunk)
             text += token_text
@@ -436,6 +479,8 @@ class ASRStream:
         self.text = ""
         self.buffer = np.empty(0, dtype=np.float32)
         self.closed = False
+        self._finished = False
+        self._final: dict[str, Any] | None = None
 
     def accept_pcm_f32le(self, payload: bytes) -> str:
         if len(payload) % 4 != 0:
@@ -452,8 +497,13 @@ class ASRStream:
         return text
 
     def finish(self) -> dict[str, Any]:
+        if self._finished:
+            assert self._final is not None
+            return self._final
         if len(self.buffer) > 0:
-            self.text += self._process_chunk(self.buffer)
+            self.text += self._process_chunk(
+                self.engine._fit_chunk(self.buffer, self.chunk_samples)
+            )
             self.buffer = np.empty(0, dtype=np.float32)
         text = self.session.flush()
         self.text += text
@@ -461,7 +511,8 @@ class ASRStream:
         sample_rate = self.engine.sample_rate or 0
         duration = self.samples_received / sample_rate if sample_rate else 0.0
         self.close()
-        return {
+        self._finished = True
+        self._final = {
             "event": "final",
             "text": self.text.strip(),
             "language": self.language,
@@ -477,6 +528,8 @@ class ASRStream:
             "chunks_skipped": self.chunks_skipped,
             "vad_enabled": self.session.vad_enabled,
         }
+        assert self._final is not None
+        return self._final
 
     def _process_chunk(self, chunk: np.ndarray) -> str:
         self.chunks_total += 1

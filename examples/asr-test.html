@@ -232,6 +232,7 @@ function toggleVadSettings(tab) {
 // --- Mic streaming ---
 let ws = null, audioCtx = null, workletNode = null, micStream = null, nativeRate = 0;
 let partialText = '';
+let finalWaiter = null;
 let sendBuffer = [];
 const SEND_THRESHOLD = 4096;
 const startBtn = document.getElementById('startBtn');
@@ -243,6 +244,7 @@ async function startMic() {
   startBtn.disabled = true; stopBtn.disabled = false;
   setStatus('Requesting microphone...', '');
   partialText = '';
+  finalWaiter = null;
   micOut.innerHTML = '<span class="placeholder">Connecting...</span>';
   micMetrics.innerHTML = '';
 
@@ -282,12 +284,14 @@ async function startMic() {
       micOut.innerHTML = '<span class="final">' + esc(msg.text) + '</span>';
       setStatus('Done', '');
       micMetrics.innerHTML = fmtMetrics(msg);
+      if (finalWaiter) { finalWaiter(msg); finalWaiter = null; }
+      if (ws && ws.readyState === WebSocket.OPEN) ws.close();
     } else if (msg.event === 'error') {
       setStatus('Error: ' + msg.message, 'err');
     }
   };
-  ws.onerror = () => { setStatus('WebSocket error', 'err'); cleanupMic(); };
-  ws.onclose = () => { if (startBtn.disabled) { setStatus('Disconnected', ''); cleanupMic(); } };
+  ws.onerror = () => { setStatus('WebSocket error', 'err'); if (finalWaiter) { finalWaiter(null); finalWaiter = null; } cleanupMic(); };
+  ws.onclose = () => { if (finalWaiter) { finalWaiter(null); finalWaiter = null; } if (startBtn.disabled) { setStatus('Disconnected', ''); cleanupMic(); } };
 }
 
 async function startAudio(serverRate) {
@@ -332,23 +336,37 @@ async function startAudio(serverRate) {
   mute.connect(audioCtx.destination);
 }
 
-function stopMic() {
-  // Flush remaining buffer
-  if (ws && ws.readyState === WebSocket.OPEN && sendBuffer.length > 0) {
-    const total = sendBuffer.reduce((s, c) => s + c.length, 0);
-    const merged = new Float32Array(total);
-    let offset = 0;
-    for (const c of sendBuffer) { merged.set(c, offset); offset += c.length; }
-    sendBuffer = [];
-    const serverRate = TARGET_RATE;
-    const pcm = downsample(merged, nativeRate, serverRate);
-    if (pcm.length > 0) ws.send(pcm.buffer);
+async function stopMic() {
+  // Flush remaining buffer, then send end and await final (5 s) before closing.
+  if (ws && ws.readyState === WebSocket.OPEN) {
+    if (sendBuffer.length > 0) {
+      const total = sendBuffer.reduce((s, c) => s + c.length, 0);
+      const merged = new Float32Array(total);
+      let offset = 0;
+      for (const c of sendBuffer) { merged.set(c, offset); offset += c.length; }
+      sendBuffer = [];
+      const serverRate = TARGET_RATE;
+      const pcm = downsample(merged, nativeRate, serverRate);
+      if (pcm.length > 0) ws.send(pcm.buffer);
+    }
     ws.send(JSON.stringify({ event: 'end' }));
-  } else if (ws && ws.readyState === WebSocket.OPEN) {
-    ws.send(JSON.stringify({ event: 'end' }));
+    try {
+      await new Promise((resolve) => {
+        finalWaiter = resolve;
+        setTimeout(() => { if (finalWaiter) { finalWaiter(null); finalWaiter = null; } }, 5000);
+      });
+    } finally {
+      if (ws && ws.readyState === WebSocket.OPEN) ws.close();
+    }
   }
   cleanupMic();
 }
+
+window.addEventListener('beforeunload', () => {
+  if (ws && ws.readyState === WebSocket.OPEN) {
+    try { ws.send(JSON.stringify({ event: 'end' })); } catch (e) {}
+  }
+});
 
 function cleanupMic() {
   stopLevelMonitor();

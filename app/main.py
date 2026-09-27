@@ -182,8 +182,16 @@ async def _transcribe_uploaded_file(
     content = await file.read()
     if not content:
         raise HTTPException(status_code=400, detail="Uploaded audio file is empty")
+
+    req_lang = language or "auto"
+    req_chunk_ms = chunk_ms or settings.default_chunk_ms
+    logger.info(
+        "Transcribe request: filename=%s size=%d language=%s chunk_ms=%d use_vad=%s",
+        file.filename, len(content), req_lang, req_chunk_ms, use_vad,
+    )
+
     try:
-        return await engine.transcribe_bytes(
+        result = await engine.transcribe_bytes(
             content=content,
             filename=file.filename or "audio",
             language=language,
@@ -193,6 +201,29 @@ async def _transcribe_uploaded_file(
             vad_silence_duration_ms=vad_silence_duration_ms,
             vad_prefix_padding_ms=vad_prefix_padding_ms,
         )
+        if not result.text.strip():
+            logger.warning(
+                "Transcribe empty result: filename=%s language=%s duration=%.2fs "
+                "chunks_total=%d chunks_processed=%d chunks_skipped=%d "
+                "chunk_ms=%d rtf=%s",
+                file.filename, result.language, result.duration_seconds,
+                result.chunks_total, result.chunks_processed, result.chunks_skipped,
+                result.chunk_ms,
+                f"{result.rtf:.2f}" if result.rtf is not None else "n/a",
+            )
+        else:
+            preview = result.text[:80].replace("\n", " ")
+            if len(result.text) > 80:
+                preview += "..."
+            logger.info(
+                "Transcribe ok: filename=%s language=%s duration=%.2fs wall=%.2fs "
+                "chunk_ms=%d rtf=%s text=%r",
+                file.filename, result.language, result.duration_seconds,
+                result.wall_seconds, result.chunk_ms,
+                f"{result.rtf:.2f}" if result.rtf is not None else "n/a",
+                preview,
+            )
+        return result
     except UnsupportedLanguageError as exc:
         raise HTTPException(
             status_code=400,
@@ -206,6 +237,7 @@ async def _transcribe_uploaded_file(
             detail={"message": str(exc), "supported_chunk_ms": list(SUPPORTED_CHUNK_MS)},
         ) from exc
     except Exception as exc:
+        logger.exception("Transcribe failed: filename=%s error=%s", file.filename, exc)
         raise HTTPException(status_code=400, detail=f"Could not transcribe audio: {exc}") from exc
 
 
@@ -216,6 +248,7 @@ async def transcription_stream(websocket: WebSocket) -> None:
 
     await websocket.accept()
     stream = None
+    final_sent = False
     language = "auto"
     use_vad = False
     chunk_ms = settings.default_chunk_ms
@@ -288,11 +321,30 @@ async def transcription_stream(websocket: WebSocket) -> None:
             elif "text" in message and message["text"]:
                 control = _parse_control(message["text"])
                 if control.get("event") == "end":
-                    await websocket.send_json(stream.finish())
+                    final = stream.finish()
+                    final_sent = True
+                    await websocket.send_json(final)
                     return
             elif message.get("type") == "websocket.disconnect":
+                if not final_sent and stream is not None:
+                    try:
+                        result = stream.finish()
+                        logger.info("WS disconnect finalize chars=%s", len(result.get("text", "")))
+                        try:
+                            await websocket.send_json(result)
+                        except Exception:
+                            pass
+                    except Exception as exc:
+                        logger.warning("WS disconnect finalize failed: %s", exc)
                 return
     except WebSocketDisconnect:
+        if not final_sent and stream is not None:
+            try:
+                result = stream.finish()
+                text = result.get("text", "")
+                logger.info("WS disconnect finalize chars=%s text=%r", len(text), text[:120])
+            except Exception as exc:
+                logger.warning("WS disconnect finalize failed: %s", exc)
         return
     except UnsupportedLanguageError as exc:
         await websocket.send_json({"event": "error", "message": str(exc), "supported": sorted(LANG_TO_ID)})
