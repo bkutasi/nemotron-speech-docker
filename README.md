@@ -11,6 +11,7 @@ docker compose up -d --build
 Two ports are exposed:
 - **HTTP 3003** -- API access (curl, scripts, file upload)
 - **HTTPS 3004** -- Browser UI with microphone (self-signed cert)
+- **HTTP 3005** -- Parakeet-v3 offline batch sidecar (`POST /transcribe`)
 
 The first boot downloads the model into the Docker volume. Startup also runs the configured MP3 smoke tests and logs duration, wall time, realtime factor, and a transcript preview.
 
@@ -97,6 +98,17 @@ For catching short utterances ("hmm", "okay"), use a smaller `vad_silence_durati
 ### Chunk Size
 
 Smaller chunks (80–160ms) reduce latency and catch short words better. Larger chunks (1120ms) give ~2x faster batch processing. Available: 80, 160, 320, 560, 1120.
+
+**Short utterances ("hello"):** The INT4 model is optimized for 560ms chunks (the server default). Clips need roughly **560ms of continuous speech** — not silence-padded to 560ms. A 280ms "hello" often returns empty (`proc=0`). Speak slightly longer (~0.6–1.0s), or pass `chunk_ms=160`/`80` per request for lower latency. Batch uploads auto-retry alternate chunk sizes on empty results. Partial final chunks are zero-padded before inference.
+
+### Parakeet-v3 batch sidecar (port 3005)
+
+Offline accuracy path for noisy mic dictation; Nemotron WS stays the streaming path.
+
+```bash
+curl -X POST http://localhost:3005/transcribe -F file=@tests/audio/sample-0.mp3 -F language=en
+# -> {"text": ..., "language": "en", "duration_s": 10.04, "rtf": 0.02, "engine": "parakeet-v3-int8"}
+```
 
 ## Endpoints
 
