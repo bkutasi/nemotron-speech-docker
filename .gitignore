@@ -8,3 +8,6 @@ __pycache__/
 .venv/
 venv/
 models/
+vad-dictate/*.log
+nemotron-models/
+parakeet-models/

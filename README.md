@@ -110,6 +110,16 @@ curl -X POST http://localhost:3005/transcribe -F file=@tests/audio/sample-0.mp3 
 # -> {"text": ..., "language": "en", "duration_s": 10.04, "rtf": 0.02, "engine": "parakeet-v3-int8"}
 ```
 
+For local, tmux-scoped omp dictation on the host running this sidecar, forward the microphone's PulseAudio server to `tcp:localhost:4713`, then run from a **separate** tmux pane:
+
+```bash
+cd vad-dictate
+./vad_omp.sh --list                   # identify the omp pane, not this shell
+PULSE_SERVER=tcp:localhost:4713 VAD_DEVICE="$(PULSE_SERVER=tcp:localhost:4713 pactl get-default-source)" ./vad_omp.sh %2
+```
+
+Replace `%2` with the live omp pane ID. The daemon inserts transcribed text without pressing Enter; Ctrl-C stops it. It stops if the chosen omp process exits. `touch ~/.vad-paused` pauses insertion; `rm ~/.vad-paused` resumes it. `vad-dictate/*.log` contains transcribed speech and is gitignored. F1 recording is independent: pause the daemon before using it.
+
 ## Endpoints
 
 OpenAI-compatible endpoints:
