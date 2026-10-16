@@ -66,6 +66,11 @@ async def demo():
     return FileResponse(_STATIC_DIR / "win95-demo.html", media_type="text/html")
 
 
+@app.get("/aero-theme.css")
+async def aero_theme():
+    return FileResponse(_STATIC_DIR / "aero-theme.css", media_type="text/css")
+
+
 @app.get("/health")
 async def health() -> dict[str, Any]:
     return {

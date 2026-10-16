@@ -1,0 +1,33 @@
+/* Aero pastel-glass theme for win95-demo.html. Scoped: only applies under body[data-theme="glass"]. */
+/* ponytail: flat selectors (no nesting/preprocessor); single theme file, variants when requested. */
+body[data-theme="glass"]{background:linear-gradient(135deg,#dbeafe 0%,#fce7f3 35%,#e0e7ff 65%,#ccfbf1 100%);color:#1e293b;font-family:-apple-system,"Segoe UI",Tahoma,sans-serif}
+body[data-theme="glass"] .win{background:rgba(255,255,255,.72);border:1px solid rgba(255,255,255,.8);border-radius:14px;box-shadow:0 8px 32px rgba(100,116,139,.25);-webkit-backdrop-filter:blur(18px) saturate(1.4);backdrop-filter:blur(18px) saturate(1.4)}
+@supports not ((backdrop-filter:blur(1px)) or (-webkit-backdrop-filter:blur(1px))){body[data-theme="glass"] .win{background:#f1f5f9}}
+body[data-theme="glass"] .titlebar{background:linear-gradient(90deg,rgba(147,197,253,.85),rgba(196,181,253,.85),rgba(249,168,212,.85));color:#1e293b;border-radius:12px 12px 0 0;padding:8px 10px}
+body[data-theme="glass"] .menu{color:#475569}
+body[data-theme="glass"] .menu span{border-radius:8px}
+body[data-theme="glass"] .menu span:hover{background:rgba(255,255,255,.7)}
+body[data-theme="glass"] fieldset{background:rgba(255,255,255,.55);border:1px solid rgba(255,255,255,.9);border-radius:14px;box-shadow:0 2px 12px rgba(100,116,139,.15);-webkit-backdrop-filter:blur(12px);backdrop-filter:blur(12px)}
+@supports not ((backdrop-filter:blur(1px)) or (-webkit-backdrop-filter:blur(1px))){body[data-theme="glass"] fieldset{background:#f8fafc}}
+body[data-theme="glass"] legend{background:rgba(255,255,255,.85);border-radius:8px;padding:1px 8px;color:#334155}
+body[data-theme="glass"] .wbtn{background:linear-gradient(180deg,#fff,#e2e8f0);border:1px solid #cbd5e1;border-radius:10px;box-shadow:0 1px 3px rgba(100,116,139,.3);color:#1e293b;padding:5px 18px}
+body[data-theme="glass"] .wbtn:hover:not(:disabled){background:linear-gradient(180deg,#fff,#dbeafe)}
+body[data-theme="glass"] .wbtn:active:not(:disabled){box-shadow:inset 0 1px 3px rgba(100,116,139,.4)}
+body[data-theme="glass"] .wbtn:disabled{color:#94a3b8;text-shadow:none;background:#f1f5f9;border-color:#e2e8f0}
+body[data-theme="glass"] .sunken{background:rgba(255,255,255,.85);border:1px solid #e2e8f0;border-radius:10px;color:#1e293b}
+body[data-theme="glass"] .sunken .part,body[data-theme="glass"] .sunken .ph{color:#64748b}
+body[data-theme="glass"] .sunken .fin{color:#0f172a}
+body[data-theme="glass"] .meter{background:rgba(255,255,255,.7);border:1px solid #cbd5e1;border-radius:8px;overflow:hidden}
+body[data-theme="glass"] .meter>div{background:linear-gradient(90deg,#6ee7b7,#67e8f9,#93c5fd)}
+body[data-theme="glass"] select,body[data-theme="glass"] input[type="text"]{border:1px solid #cbd5e1;border-radius:8px;background:#fff;color:#1e293b;padding:3px 6px}
+body[data-theme="glass"] #levelFill{background:linear-gradient(90deg,#6ee7b7,#67e8f9,#93c5fd)}
+body[data-theme="glass"] #micOut,body[data-theme="glass"] #fileOut,body[data-theme="glass"] #pqOut{background:rgba(255,255,255,.85);border:1px solid #e2e8f0;border-radius:10px;color:#0f172a}
+body[data-theme="glass"] #micStatus{color:#0f172a;font-weight:bold}
+body[data-theme="glass"] #micMetrics,body[data-theme="glass"] #micLog{color:#334155}
+body[data-theme="glass"] #startBtn{background:linear-gradient(180deg,#bbf7d0,#86efac);border-color:#86efac}
+body[data-theme="glass"] #stopBtn{background:linear-gradient(180deg,#fecaca,#fca5a5);border-color:#fca5a5}
+body[data-theme="glass"] #uploadBtn,body[data-theme="glass"] #pqBtn{background:linear-gradient(180deg,#e0e7ff,#bfdbfe);border-color:#bfdbfe}
+body[data-theme="glass"] #fileInput{color:#334155}
+body[data-theme="glass"] #pqUrl{border:1px solid #cbd5e1;border-radius:8px}
+body[data-theme="glass"] footer{color:#475569}
+body[data-theme="glass"] footer a{color:#2563eb}

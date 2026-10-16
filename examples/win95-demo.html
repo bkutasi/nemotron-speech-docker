@@ -35,10 +35,11 @@ input[type=file]{font-family:inherit;font-size:12px}
 footer{color:#fff;text-align:center;margin-top:12px;font-size:11px}
 footer a{color:#fff}
 </style>
+<link rel="stylesheet" href="aero-theme.css">
 </head>
 <body>
 <div class="win">
-  <div class="titlebar"><span class="t">Nemotron ASR - Live Demo</span><button class="tbtn" tabindex="-1">_</button><button class="tbtn" tabindex="-1">X</button></div>
+  <div class="titlebar"><span class="t">Nemotron ASR - Live Demo</span><span style="display:flex;gap:2px"><button class="tbtn" id="th95" title="Win95" style="width:auto;padding:0 6px">95</button><button class="tbtn" id="thGlass" title="Glass" style="width:auto;padding:0 6px">Glass</button></span><button class="tbtn" tabindex="-1">_</button><button class="tbtn" tabindex="-1">X</button></div>
   <div class="menu"><span><u>F</u>ile</span><span><u>E</u>dit</span><span><u>H</u>elp</span></div>
   <div class="body">
     <fieldset>
@@ -82,65 +83,68 @@ footer a{color:#fff}
 </div>
 <footer>Classic demo &middot; <a href="/">modern UI</a></footer>
 <script>
-var TARGET=16000,SEND_N=4096;
-var ws=null,audioCtx=null,workletNode=null,micStream=null,nativeRate=0,serverRate=TARGET;
-var sendBuf=[],finalWaiter=null,segCount=0,chunksSent=0,t0=0;
-var startBtn=document.getElementById('startBtn'),stopBtn=document.getElementById('stopBtn');
-var micOut=document.getElementById('micOut'),micStatus=document.getElementById('micStatus'),micMetrics=document.getElementById('micMetrics'),micLog=document.getElementById('micLog'),levelFill=document.getElementById('levelFill');
-var analyser=null,rafId=null;
+var TARGET=16000,FLUSH_MS=180;
+var ws=null,audioCtx=null,workletNode=null,micStream=null;
+var nativeRate=0,serverRate=TARGET;
+var sendBuf=[],sendBufLen=0,flushTimer=null,lastFlush=0;
+var finalWaiter=null,segCount=0,chunksSent=0,sendErr=0,t0=0,lvl=0;
 var WORKLET='class P extends AudioWorkletProcessor{process(i){var c=i[0];if(c&&c[0]){var c2=new Float32Array(c[0].length);c2.set(c[0]);this.port.postMessage(c2,[c2.buffer]);}return true;}}registerProcessor("pcm",P);';
 function esc(s){var d=document.createElement('div');d.textContent=s||'';return d.innerHTML;}
 function logEv(s){var d=document.createElement('div');d.textContent=s;micLog.appendChild(d);micLog.scrollTop=micLog.scrollHeight;}
 function fmtM(m){if(!m||!m.duration_seconds)return'';var p=['duration: '+m.duration_seconds.toFixed(2)+'s'];if(m.wall_seconds)p.push('wall: '+m.wall_seconds.toFixed(2)+'s');if(m.rtf!=null)p.push('rtf: '+Number(m.rtf).toFixed(2));if(m.chunks_processed!=null)p.push('chunks: '+m.chunks_processed);return p.join('  ');}
 function setMic(s){micStatus.textContent=s;}
-function levelTick(){if(!analyser)return;var b=new Uint8Array(analyser.frequencyBinCount);analyser.getByteFrequencyData(b);var s=0,i;for(i=0;i<b.length;i++)s+=b[i];levelFill.style.width=Math.min(100,(s/b.length/80)*100)+'%';rafId=requestAnimationFrame(levelTick);}
-function levelStart(ctx,src){analyser=ctx.createAnalyser();analyser.fftSize=256;src.connect(analyser);levelTick();}
-function levelStop(){if(rafId)cancelAnimationFrame(rafId);rafId=null;analyser=null;levelFill.style.width='0%';}
+function liveMetrics(){micMetrics.textContent='sent='+chunksSent+' err='+sendErr+' segs='+segCount;}
+function levelTick(){if(!analyser)return;var b=new Uint8Array(analyser.frequencyBinCount);analyser.getByteFrequencyData(b);var s=0,i;for(i=0;i<b.length;i++)s+=b[i];var t=(s/b.length/80)*100;lvl+=(Math.min(100,t)-lvl)*0.3;levelFill.style.width=lvl+'%';rafId=requestAnimationFrame(levelTick);}
+function levelStart(ctx,src){analyser=ctx.createAnalyser();analyser.fftSize=256;src.connect(analyser);lvl=0;levelTick();}
+function levelStop(){if(rafId)cancelAnimationFrame(rafId);rafId=null;analyser=null;lvl=0;levelFill.style.width='0%';}
+function flushSend(force){if(!ws||ws.readyState!==WebSocket.OPEN||!sendBufLen)return;var now=performance.now();var want=Math.floor(serverRate*FLUSH_MS/1000);if(!force&&sendBufLen<want&&(now-lastFlush)<FLUSH_MS*2)return;var mg=new Float32Array(sendBufLen),o=0,i;for(i=0;i<sendBuf.length;i++){mg.set(sendBuf[i],o);o+=sendBuf[i].length;}sendBuf=[];sendBufLen=0;lastFlush=now;var p=downsample(mg,nativeRate,serverRate);if(!p.length)return;try{ws.send(p.buffer);chunksSent++;if(chunksSent===1||chunksSent%50===0)logEv('sent #'+chunksSent+' n='+p.length);liveMetrics();}catch(e){sendErr++;logEv('send err: '+e.message);liveMetrics();}}
 async function startMic(){
-  startBtn.disabled=true;stopBtn.disabled=false;finalWaiter=null;sendBuf=[];segCount=0;chunksSent=0;micLog.innerHTML='';
+  if(ws&&ws.readyState!==WebSocket.CLOSED){try{ws.close();}catch(e){}cleanupMic();}
+  startBtn.disabled=true;stopBtn.disabled=false;finalWaiter=null;sendBuf=[];sendBufLen=0;segCount=0;chunksSent=0;sendErr=0;lvl=0;micLog.innerHTML='';
   micOut.innerHTML='<span class="ph">Connecting...</span>';micMetrics.textContent='';setMic('Requesting microphone...');
   try{micStream=await navigator.mediaDevices.getUserMedia({audio:{channelCount:1,echoCancellation:true,noiseSuppression:true}});}
   catch(e){setMic('Mic denied: '+e.message);startBtn.disabled=false;stopBtn.disabled=true;return;}
   var url=(location.protocol==='https:'?'wss://':'ws://')+location.host+'/v1/transcriptions/stream';
-  ws=new WebSocket(url);ws.binaryType='arraybuffer';
-  ws.onopen=function(){setMic('Connected');t0=performance.now();ws.send(JSON.stringify({language:document.getElementById('langMic').value,chunk_ms:parseInt(document.getElementById('chunkMic').value,10)}));};
+  try{ws=new WebSocket(url);}catch(e){setMic('WS fail: '+e.message);logEv('ws create err: '+e.message);cleanupMic();return;}
+  ws.binaryType='arraybuffer';
+  ws.onopen=function(){setMic('Connected');t0=performance.now();lastFlush=t0;try{ws.send(JSON.stringify({language:document.getElementById('langMic').value,chunk_ms:parseInt(document.getElementById('chunkMic').value,10)}));}catch(e){setMic('Config send failed');logEv('config err: '+e.message);}};
   ws.onmessage=function(ev){var m;try{m=JSON.parse(ev.data);}catch(e){return;}
     if(m.event==='ready'){serverRate=m.sample_rate||TARGET;logEv('ready sr='+serverRate);startAudio();}
     else if(m.event==='partial'){if(m.cumulative!==undefined)micOut.innerHTML='<span class="part">'+esc(m.cumulative)+'</span>';}
-    else if(m.event==='segment'){segCount++;logEv('segment #'+m.index+' '+m.text);}
-    else if(m.event==='final'){var wall=(performance.now()-t0)/1000;micOut.innerHTML='<span class="fin">'+esc(m.text)+'</span>';micMetrics.textContent=fmtM(m)+'  segs='+segCount+' sent='+chunksSent+' wall='+wall.toFixed(2)+'s';setMic('Done');logEv('final len='+m.text.length);if(finalWaiter){finalWaiter(m);finalWaiter=null;}}
+    else if(m.event==='segment'){segCount++;logEv('segment #'+m.index+' '+m.text);liveMetrics();}
+    else if(m.event==='final'){var wall=(performance.now()-t0)/1000;micOut.innerHTML='<span class="fin">'+esc(m.text)+'</span>';micMetrics.textContent=fmtM(m)+'  segs='+segCount+' sent='+chunksSent+' err='+sendErr+' wall='+wall.toFixed(2)+'s';setMic('Done');logEv('final len='+m.text.length);if(finalWaiter){finalWaiter(m);finalWaiter=null;}}
     else if(m.event==='error'){setMic('Error: '+m.message);logEv('error '+m.message);if(finalWaiter){finalWaiter(null);finalWaiter=null;}}
   };
-  ws.onerror=function(){setMic('WebSocket error');if(finalWaiter){finalWaiter(null);finalWaiter=null;}cleanupMic();};
-  ws.onclose=function(){if(finalWaiter){finalWaiter(null);finalWaiter=null;}if(startBtn.disabled){setMic('Disconnected');cleanupMic();}};
+  ws.onerror=function(){setMic('WebSocket error');logEv('ws error');if(finalWaiter){finalWaiter(null);finalWaiter=null;}cleanupMic();};
+  ws.onclose=function(){if(flushTimer){clearInterval(flushTimer);flushTimer=null;}if(finalWaiter){finalWaiter(null);finalWaiter=null;}if(startBtn.disabled){setMic('Disconnected');logEv('close sent='+chunksSent+' err='+sendErr);cleanupMic();}};
 }
 async function startAudio(){
-  audioCtx=new AudioContext();if(audioCtx.state==='suspended')await audioCtx.resume();nativeRate=audioCtx.sampleRate;
-  setMic('Recording '+nativeRate+'Hz -> '+serverRate+'Hz');
-  var src=audioCtx.createMediaStreamSource(micStream);levelStart(audioCtx,src);
-  var blob=new Blob([WORKLET],{type:'application/javascript'});var u=URL.createObjectURL(blob);
-  await audioCtx.audioWorklet.addModule(u);URL.revokeObjectURL(u);
-  workletNode=new AudioWorkletNode(audioCtx,'pcm');
-  workletNode.port.onmessage=function(e){if(!ws||ws.readyState!==WebSocket.OPEN)return;sendBuf.push(e.data);
-    var tot=0,i;for(i=0;i<sendBuf.length;i++)tot+=sendBuf[i].length;
-    if(tot>=SEND_N){var mg=new Float32Array(tot),o=0;for(i=0;i<sendBuf.length;i++){mg.set(sendBuf[i],o);o+=sendBuf[i].length;}sendBuf=[];
-      var p=downsample(mg,nativeRate,serverRate);if(p.length>0){ws.send(p.buffer);chunksSent++;}}};
-  var mute=audioCtx.createGain();mute.gain.value=0;src.connect(workletNode);workletNode.connect(mute);mute.connect(audioCtx.destination);
+  try{
+    audioCtx=new AudioContext();if(audioCtx.state==='suspended'){try{await audioCtx.resume();}catch(e){}if(audioCtx.state==='suspended')logEv('warn: AudioContext suspended');}
+    nativeRate=audioCtx.sampleRate;setMic('Recording '+nativeRate+'Hz -> '+serverRate+'Hz');
+    var src=audioCtx.createMediaStreamSource(micStream);levelStart(audioCtx,src);
+    var blob=new Blob([WORKLET],{type:'application/javascript'});var u=URL.createObjectURL(blob);
+    await audioCtx.audioWorklet.addModule(u);URL.revokeObjectURL(u);
+    workletNode=new AudioWorkletNode(audioCtx,'pcm');
+    workletNode.port.onmessage=function(e){if(!ws||ws.readyState!==WebSocket.OPEN)return;sendBuf.push(e.data);sendBufLen+=e.data.length;flushSend(false);};
+    lastFlush=performance.now();flushTimer=setInterval(function(){flushSend(false);},FLUSH_MS);
+    var mute=audioCtx.createGain();mute.gain.value=0;src.connect(workletNode);workletNode.connect(mute);mute.connect(audioCtx.destination);
+  }catch(e){setMic('Audio failed: '+e.message);logEv('audio err: '+e.message);}
 }
 async function stopMic(){
+  if(flushTimer){clearInterval(flushTimer);flushTimer=null;}
   if(ws&&ws.readyState===WebSocket.OPEN){
-    if(sendBuf.length>0){var tot=0,i;for(i=0;i<sendBuf.length;i++)tot+=sendBuf[i].length;
-      var mg=new Float32Array(tot),o=0;for(i=0;i<sendBuf.length;i++){mg.set(sendBuf[i],o);o+=sendBuf[i].length;}sendBuf=[];
-      var p=downsample(mg,nativeRate,serverRate);if(p.length>0){ws.send(p.buffer);chunksSent++;}}
-    ws.send(JSON.stringify({event:'end'}));setMic('Finalizing...');
+    flushSend(true);
+    try{ws.send(JSON.stringify({event:'end'}));}catch(e){sendErr++;logEv('end err: '+e.message);}
+    setMic('Finalizing...');
     try{await new Promise(function(res){finalWaiter=res;setTimeout(function(){if(finalWaiter){finalWaiter(null);finalWaiter=null;}},5000);});}
     finally{if(ws&&ws.readyState===WebSocket.OPEN)ws.close();}
   }
   cleanupMic();
 }
 window.addEventListener('beforeunload',function(){if(ws&&ws.readyState===WebSocket.OPEN){try{ws.send(JSON.stringify({event:'end'}));}catch(e){}}});
-function cleanupMic(){levelStop();if(workletNode){workletNode.disconnect();workletNode=null;}if(audioCtx){audioCtx.close();audioCtx=null;}if(micStream){micStream.getTracks().forEach(function(t){t.stop();});micStream=null;}startBtn.disabled=false;stopBtn.disabled=true;}
-function downsample(buf,inR,outR){if(inR===outR)return new Float32Array(buf);var r=inR/outR,n=Math.round(buf.length/r),o=new Float32Array(n),i;for(i=0;i<n;i++){var p=i*r,lo=Math.floor(p),hi=Math.min(lo+1,buf.length-1),f=p-lo;o[i]=buf[lo]*(1-f)+buf[hi]*f;}return o;}
+function cleanupMic(){if(flushTimer){clearInterval(flushTimer);flushTimer=null;}levelStop();if(workletNode){try{workletNode.disconnect();}catch(e){}workletNode=null;}if(audioCtx){try{audioCtx.close();}catch(e){}audioCtx=null;}if(micStream){micStream.getTracks().forEach(function(t){t.stop();});micStream=null;}startBtn.disabled=false;stopBtn.disabled=true;}
+(function(){var KEY='nm-theme';function apply(t){document.body.dataset.theme=(t==='glass')?'glass':'win95';try{localStorage.setItem(KEY,document.body.dataset.theme);}catch(e){}}var b95=document.getElementById('th95'),bG=document.getElementById('thGlass');if(b95)b95.onclick=function(){apply('win95');};if(bG)bG.onclick=function(){apply('glass');};var init='win95';try{init=localStorage.getItem(KEY)||'win95';}catch(e){}apply(init);})();
 var fileInput=document.getElementById('fileInput'),uploadBtn=document.getElementById('uploadBtn');
 var fileOut=document.getElementById('fileOut'),fileStatus=document.getElementById('fileStatus'),fileMetrics=document.getElementById('fileMetrics');
 var pqBtn=document.getElementById('pqBtn'),pqUrl=document.getElementById('pqUrl'),pqOut=document.getElementById('pqOut'),pqMetrics=document.getElementById('pqMetrics');
