@@ -249,6 +249,7 @@ async def transcription_stream(websocket: WebSocket) -> None:
     await websocket.accept()
     stream = None
     final_sent = False
+    seg_idx = 0
     language = "auto"
     use_vad = False
     chunk_ms = settings.default_chunk_ms
@@ -310,14 +311,18 @@ async def transcription_stream(websocket: WebSocket) -> None:
         if "bytes" in first and first["bytes"] is not None:
             partial = stream.accept_pcm_f32le(first["bytes"])
             if partial:
-                await websocket.send_json({"event": "partial", "text": partial})
+                await websocket.send_json({"event": "partial", "text": partial, "cumulative": stream.text})
+                await websocket.send_json({"event": "segment", "index": seg_idx, "text": partial})
+                seg_idx += 1
 
         while True:
             message = await websocket.receive()
             if "bytes" in message and message["bytes"] is not None:
                 partial = stream.accept_pcm_f32le(message["bytes"])
                 if partial:
-                    await websocket.send_json({"event": "partial", "text": partial})
+                    await websocket.send_json({"event": "partial", "text": partial, "cumulative": stream.text})
+                    await websocket.send_json({"event": "segment", "index": seg_idx, "text": partial})
+                    seg_idx += 1
             elif "text" in message and message["text"]:
                 control = _parse_control(message["text"])
                 if control.get("event") == "end":

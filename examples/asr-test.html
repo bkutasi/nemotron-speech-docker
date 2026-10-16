@@ -278,17 +278,11 @@ async function startMic() {
     if (msg.event === 'ready') {
       startAudio(msg.sample_rate || TARGET_RATE);
     } else if (msg.event === 'partial') {
-      partialText += msg.text;
-      micOut.innerHTML = '<span class="partial">' + esc(partialText) + '</span>';
+      if (msg.cumulative !== undefined) micOut.innerHTML = '<span class="partial">' + esc(msg.cumulative) + '</span>';
+      else { partialText += msg.text; micOut.innerHTML = '<span class="partial">' + esc(partialText) + '</span>'; }
+    } else if (msg.event === 'segment') {
+      // Machine consumers (omp-shim) use indexed committed chunks; browser already shows cumulative partial.
     } else if (msg.event === 'final') {
-      micOut.innerHTML = '<span class="final">' + esc(msg.text) + '</span>';
-      setStatus('Done', '');
-      micMetrics.innerHTML = fmtMetrics(msg);
-      if (finalWaiter) { finalWaiter(msg); finalWaiter = null; }
-      if (ws && ws.readyState === WebSocket.OPEN) ws.close();
-    } else if (msg.event === 'error') {
-      setStatus('Error: ' + msg.message, 'err');
-    }
   };
   ws.onerror = () => { setStatus('WebSocket error', 'err'); if (finalWaiter) { finalWaiter(null); finalWaiter = null; } cleanupMic(); };
   ws.onclose = () => { if (finalWaiter) { finalWaiter(null); finalWaiter = null; } if (startBtn.disabled) { setStatus('Disconnected', ''); cleanupMic(); } };
