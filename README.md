@@ -11,15 +11,17 @@ docker compose up -d --build
 Three ports are exposed:
 - **HTTP 3003** -- API access (curl, scripts, file upload)
 - **HTTPS 3004** -- Browser UI with microphone (self-signed cert)
-- **HTTP 3005** -- Parakeet-v3 offline batch sidecar (`POST /transcribe`)
+- **HTTP 3005** -- Parakeet-v3 offline batch sidecar (`POST /transcribe`, plus `POST /audio/transcriptions` and `POST /v1/audio/transcriptions` aliases)
 
-The first boot downloads the model into the Docker volume. Startup also runs the configured MP3 smoke tests and logs duration, wall time, realtime factor, and a transcript preview.
+The first boot downloads the models into the host bind mounts (`./nemotron-models:/models`, `./parakeet-models:/app/models`). Startup also runs the configured MP3 smoke tests and logs duration, wall time, realtime factor, and a transcript preview.
 
-Health checks:
+Health checks (compose gates both services on `/ready`, which returns 503 until the model is loaded):
 
 ```bash
 curl http://localhost:3003/health
 curl -k https://localhost:3004/health
+curl http://localhost:3003/ready
+curl http://localhost:3005/ready
 ```
 
 ## Live Transcription Test
@@ -133,13 +135,19 @@ OpenAI-compatible endpoints:
 - `POST /v1/audio/transcriptions` accepts multipart audio upload with `file`, `language`, `use_vad`, `chunk_ms`, `vad_threshold`, `vad_silence_duration_ms`, and `vad_prefix_padding_ms`; returns `{"text": ...}`.
 - `GET /v1/models` returns the OpenAI-style model list.
 - `GET /status` returns `{"status": "idle"}` or `{"status": "busy"}`.
-- `WS /v1/audio/transcriptions/stream` OpenAI-compatible WebSocket streaming alias.
+- `GET /ready` returns model readiness (`200 {"status":"ready",...}` or `503 {"status":"not_ready",...}`); compose healthcheck probes this.
+- `WS /v1/audio/transcriptions/stream` alias for the custom streaming protocol below (JSON config + mono f32le PCM + `{"event":"end"}`), not an OpenAI protocol.
 
 Nemotron-native endpoints:
 
 - `POST /v1/transcriptions` accepts multipart audio upload with `language`, `use_vad`, `chunk_ms`, `vad_threshold`, `vad_silence_duration_ms`, and `vad_prefix_padding_ms`; returns text plus duration/RTF metrics.
-- `WS /v1/transcriptions/stream` accepts mono little-endian float32 PCM at the model sample rate.
+- `WS /v1/transcriptions/stream` accepts JSON config, then mono little-endian float32 PCM at the model sample rate; client ends with `{"event":"end"}` and receives `partial`/`final` events.
 - `GET /v1/languages` lists supported language codes.
+
+Parakeet sidecar (port 3005):
+
+- `GET /ready` returns `{"ready": true/false, ...}` with 503 when the model is unloaded; compose healthcheck probes this.
+- `POST /audio/transcriptions` and `POST /v1/audio/transcriptions` are OpenAI-compatible aliases for `POST /transcribe` (buffered whole-utterance POST).
 
 ## Config
 

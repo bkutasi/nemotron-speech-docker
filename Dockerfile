@@ -12,7 +12,7 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 WORKDIR /app
 
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends ffmpeg libsndfile1 ca-certificates openssl \
+    && apt-get install -y --no-install-recommends ffmpeg libsndfile1 ca-certificates openssl curl \
     && rm -rf /var/lib/apt/lists/*
 
 # Self-signed cert for HTTPS (mic access from LAN browsers)

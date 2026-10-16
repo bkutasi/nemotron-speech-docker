@@ -8,12 +8,11 @@ WORKDIR /app
 COPY requirements.txt /app/requirements.txt
 RUN pip install --no-cache-dir -r /app/requirements.txt
 
-# Model fetch: baked into the image when the builder has net access; the
-# entrypoint re-fetches at first runtime start if a bind mount hides it.
-# (expects encoder.int8.onnx, decoder.int8.onnx, joiner.int8.onnx, tokens.txt).
+# Runtime fetch only: ./parakeet-models bind mount hides image content,
+# so a build-time fetch would be re-downloaded by the entrypoint anyway.
 ARG PARAKEET_URL=https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/sherpa-onnx-nemo-parakeet-tdt-0.6b-v3-int8.tar.bz2
-RUN mkdir -p /app/models && (curl -sSL -o /tmp/pk3.tar.bz2 "$PARAKEET_URL" \
-    && tar xjf /tmp/pk3.tar.bz2 -C /app/models && rm -f /tmp/pk3.tar.bz2) || echo "model fetch deferred to entrypoint"
+ENV PARAKEET_URL=${PARAKEET_URL}
+RUN mkdir -p /app/models
 
 ENV MODEL_DIR=/app/models/parakeet-v3-int8 OMP_NUM_THREADS=4 PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1
 COPY app /app/app

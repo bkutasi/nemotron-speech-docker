@@ -9,6 +9,7 @@ from typing import Any
 
 import numpy as np
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
+from fastapi.responses import JSONResponse
 
 logger = logging.getLogger("uvicorn.error")
 
@@ -19,6 +20,8 @@ ENGINE = "parakeet-v3-int8"
 # Below this duration the encoder conv stack gets 0 frames and throws
 # ConvInteger {0,128} — Happens on Space-tap / instant-stop empty clips.
 MIN_AUDIO_S = 0.25
+
+recognizer: Any = None
 
 
 def _load_recognizer() -> Any:
@@ -41,8 +44,12 @@ def _load_recognizer() -> Any:
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     global recognizer
-    recognizer = _load_recognizer()
-    logger.info("Parakeet ready: model_dir=%s threads=%s", MODEL_DIR, NUM_THREADS)
+    try:
+        recognizer = _load_recognizer()
+        logger.info("Parakeet ready: model_dir=%s threads=%s", MODEL_DIR, NUM_THREADS)
+    except Exception as exc:
+        recognizer = None
+        logger.exception("Parakeet model load failed: %s", exc)
     yield
 
 
@@ -95,8 +102,11 @@ async def health() -> dict[str, str]:
 
 
 @app.get("/ready")
-async def ready() -> dict[str, Any]:
-    return {"ready": recognizer is not None, "model_dir": str(MODEL_DIR), "engine": ENGINE}
+async def ready() -> JSONResponse:
+    payload = {"ready": recognizer is not None, "model_dir": str(MODEL_DIR), "engine": ENGINE}
+    if recognizer is not None:
+        return JSONResponse(payload)
+    return JSONResponse(payload, status_code=503)
 
 
 @app.post("/transcribe")
