@@ -4,6 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Nemotron ASR - Win95 Demo</title>
+<link rel="icon" href="data:,">
 <style>
 *{box-sizing:border-box}
 body{background:#008080;font-family:"MS Sans Serif",Tahoma,Geneva,sans-serif;font-size:12px;margin:0;padding:24px;min-height:100vh;color:#000}
@@ -87,7 +88,7 @@ var TARGET=16000,FLUSH_MS=180;
 var ws=null,audioCtx=null,workletNode=null,micStream=null;
 var nativeRate=0,serverRate=TARGET;
 var sendBuf=[],sendBufLen=0,flushTimer=null,lastFlush=0;
-var finalWaiter=null,segCount=0,chunksSent=0,sendErr=0,t0=0,lvl=0;
+var finalWaiter=null,segCount=0,chunksSent=0,sendErr=0,t0=0,lvl=0,analyser=null,rafId=null;
 var WORKLET='class P extends AudioWorkletProcessor{process(i){var c=i[0];if(c&&c[0]){var c2=new Float32Array(c[0].length);c2.set(c[0]);this.port.postMessage(c2,[c2.buffer]);}return true;}}registerProcessor("pcm",P);';
 function esc(s){var d=document.createElement('div');d.textContent=s||'';return d.innerHTML;}
 function logEv(s){var d=document.createElement('div');d.textContent=s;micLog.appendChild(d);micLog.scrollTop=micLog.scrollHeight;}
@@ -97,6 +98,7 @@ function liveMetrics(){micMetrics.textContent='sent='+chunksSent+' err='+sendErr
 function levelTick(){if(!analyser)return;var b=new Uint8Array(analyser.frequencyBinCount);analyser.getByteFrequencyData(b);var s=0,i;for(i=0;i<b.length;i++)s+=b[i];var t=(s/b.length/80)*100;lvl+=(Math.min(100,t)-lvl)*0.3;levelFill.style.width=lvl+'%';rafId=requestAnimationFrame(levelTick);}
 function levelStart(ctx,src){analyser=ctx.createAnalyser();analyser.fftSize=256;src.connect(analyser);lvl=0;levelTick();}
 function levelStop(){if(rafId)cancelAnimationFrame(rafId);rafId=null;analyser=null;lvl=0;levelFill.style.width='0%';}
+function downsample(buf,inR,outR){if(inR===outR||!inR||!outR)return new Float32Array(buf);var r=inR/outR,n=Math.max(1,Math.round(buf.length/r)),o=new Float32Array(n),i;for(i=0;i<n;i++){var p=i*r,lo=Math.floor(p),hi=Math.min(lo+1,buf.length-1),f=p-lo;o[i]=buf[lo]*(1-f)+buf[hi]*f;}return o;}
 function flushSend(force){if(!ws||ws.readyState!==WebSocket.OPEN||!sendBufLen)return;var now=performance.now();var want=Math.floor(serverRate*FLUSH_MS/1000);if(!force&&sendBufLen<want&&(now-lastFlush)<FLUSH_MS*2)return;var mg=new Float32Array(sendBufLen),o=0,i;for(i=0;i<sendBuf.length;i++){mg.set(sendBuf[i],o);o+=sendBuf[i].length;}sendBuf=[];sendBufLen=0;lastFlush=now;var p=downsample(mg,nativeRate,serverRate);if(!p.length)return;try{ws.send(p.buffer);chunksSent++;if(chunksSent===1||chunksSent%50===0)logEv('sent #'+chunksSent+' n='+p.length);liveMetrics();}catch(e){sendErr++;logEv('send err: '+e.message);liveMetrics();}}
 async function startMic(){
   if(ws&&ws.readyState!==WebSocket.CLOSED){try{ws.close();}catch(e){}cleanupMic();}

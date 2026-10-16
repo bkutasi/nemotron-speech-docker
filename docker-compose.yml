@@ -14,6 +14,7 @@ services:
       HF_HUB_DOWNLOAD_TIMEOUT: "60"
     volumes:
       - ./nemotron-models:/models
+      - ./examples:/app/examples  # live UI: no rebuild for HTML/CSS/JS tweaks
     restart: unless-stopped
     logging:
       driver: json-file
