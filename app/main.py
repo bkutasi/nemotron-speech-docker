@@ -61,6 +61,11 @@ async def index():
     return FileResponse(_STATIC_DIR / "asr-test.html", media_type="text/html")
 
 
+@app.get("/demo")
+async def demo():
+    return FileResponse(_STATIC_DIR / "win95-demo.html", media_type="text/html")
+
+
 @app.get("/health")
 async def health() -> dict[str, Any]:
     return {
