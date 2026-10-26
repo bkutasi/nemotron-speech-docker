@@ -13,15 +13,40 @@ Three ports are exposed:
 - **HTTPS 3004** -- Browser UI with microphone (self-signed cert)
 - **HTTP 3005** -- Parakeet-v3 offline batch sidecar (`POST /transcribe`, plus `POST /audio/transcriptions` and `POST /v1/audio/transcriptions` aliases)
 
-The first boot downloads the models into the host bind mounts (`./nemotron-models:/models`, `./parakeet-models:/app/models`). Startup also runs the configured MP3 smoke tests and logs duration, wall time, realtime factor, and a transcript preview.
+The first boot downloads the models into the host bind mounts (`./nemotron-models:/models`, `./parakeet-models:/app/models`). With `LAZY_LOAD=false` startup also loads the model and runs the configured MP3 smoke tests, logging duration, wall time, realtime factor, and a transcript preview; the default lazy mode skips that and loads on first use.
 
-Health checks (compose gates both services on `/ready`, which returns 503 until the model is loaded):
+Health checks (compose gates both services on `/ready`, which reports the weights being on disk, not resident in RAM):
 
 ```bash
 curl http://localhost:3003/health
 curl -k https://localhost:3004/health
 curl http://localhost:3003/ready
 curl http://localhost:3005/ready
+```
+
+## Model residency (lazy load + idle unload)
+
+Neither service keeps its weights in RAM when nothing is happening. `docker compose up` leaves both models on disk only; the first request loads them, and `IDLE_UNLOAD_SECONDS` (default 300 = 5 min) of no traffic drops them again. Predictions from `/transcriptions`, `/transcribe` and the websocket stream all load the model themselves, so a cold request just takes the load on the chin.
+
+Reload speed comes from keeping the files hot rather than resident: startup reads the whole model directory once, so the weights live in the page cache and a reload is a memory copy instead of a disk read. Weights are never re-downloaded, the snapshot is only fetched when the bind mount is empty.
+
+Unloading is not just dropping the Python reference. ONNX Runtime keeps freed buffers in its own arena, so the process held on to roughly 900 MiB after the first unload and more on every cycle. `unload()` therefore calls `malloc_trim(0)` after `gc.collect()`, which hands that heap back to the kernel. Measured on this host (CPU, int4, `IDLE_UNLOAD_SECONDS=20`, three load/unload cycles):
+
+| Service | engine load | cold request | reload request | RSS loaded | RSS after unload | fresh start |
+|---|---|---|---|---|---|---|
+| nemotron-asr | 0.38s | 1.51s | 1.27s | 682 MiB | 166 MiB | 122 MiB |
+| parakeet-asr | 0.75s | 1.27s | 0.95s | ~1.0 GiB | 101 MiB | 49 MiB |
+
+Those idle figures were flat across all three cycles, so repeated load/unload does not creep upward. A stream held open for 24s with a 20s idle window stayed loaded throughout: nothing unloads under a stream or an upload.
+
+`/health` carries the residency detail (`loaded`, `loads`, `load_seconds`, `idle_seconds`). Nothing unloads while a stream or upload is in flight.
+
+Disable either half without editing the compose file:
+
+```bash
+LAZY_LOAD=false docker compose up -d         # load at startup, never unload
+IDLE_UNLOAD_SECONDS=0 docker compose up -d   # once loaded, stay loaded
+IDLE_UNLOAD_SECONDS=30 docker compose up -d  # aggressive unload, handy for testing
 ```
 
 ## Live Transcription Test
@@ -135,7 +160,8 @@ OpenAI-compatible endpoints:
 - `POST /v1/audio/transcriptions` accepts multipart audio upload with `file`, `language`, `use_vad`, `chunk_ms`, `vad_threshold`, `vad_silence_duration_ms`, and `vad_prefix_padding_ms`; returns `{"text": ...}`.
 - `GET /v1/models` returns the OpenAI-style model list.
 - `GET /status` returns `{"status": "idle"}` or `{"status": "busy"}`.
-- `GET /ready` returns model readiness (`200 {"status":"ready",...}` or `503 {"status":"not_ready",...}`); compose healthcheck probes this.
+- `GET /ready` returns `200 {"status":"ready","loaded":true/false,...}` while the weights are on disk and `503` when they are missing; compose healthcheck probes this.
+- `GET /health` returns residency state (`loaded`, `loads`, `load_seconds`, `idle_seconds`, `idle_unload_seconds`).
 - `WS /v1/audio/transcriptions/stream` alias for the custom streaming protocol below (JSON config + mono f32le PCM + `{"event":"end"}`), not an OpenAI protocol.
 
 Nemotron-native endpoints:
@@ -146,12 +172,13 @@ Nemotron-native endpoints:
 
 Parakeet sidecar (port 3005):
 
-- `GET /ready` returns `{"ready": true/false, ...}` with 503 when the model is unloaded; compose healthcheck probes this.
+- `GET /ready` returns `{"ready": true/false, "loaded": true/false, ...}`, 503 only when the model files are missing; compose healthcheck probes this.
+- `GET /health` returns residency state (`loaded`, `loads`, `load_seconds`, `idle_seconds`).
 - `POST /audio/transcriptions` and `POST /v1/audio/transcriptions` are OpenAI-compatible aliases for `POST /transcribe` (buffered whole-utterance POST).
 
 ## Config
 
-Edit `config.yaml` for the model, provider, default chunk size, and startup self-test files. Environment variables still override model settings:
+Edit `config.yaml` for the model, provider, default chunk size, startup self-test files, and residency (`lazy_load`, `idle_unload_seconds`). Environment variables still override model settings:
 
 ```text
 MODEL_ID
@@ -160,4 +187,8 @@ EXECUTION_PROVIDER
 DEFAULT_CHUNK_MS
 STARTUP_SELF_TEST
 CONFIG_PATH
+
+# model residency (both services)
+LAZY_LOAD              # default true: start with the model unloaded
+IDLE_UNLOAD_SECONDS    # default 300: idle time before the model leaves RAM
 ```

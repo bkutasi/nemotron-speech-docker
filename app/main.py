@@ -1,4 +1,5 @@
 import asyncio
+import contextlib
 import logging
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -25,6 +26,7 @@ engine: NemotronASR = build_engine(
     model_id=settings.model_id,
     model_dir=settings.model_dir,
     execution_provider=settings.execution_provider,
+    idle_unload_seconds=settings.idle_unload_seconds,
 )
 load_error: str | None = None
 active_streams = 0
@@ -35,22 +37,57 @@ _STATIC_DIR = Path(__file__).resolve().parent.parent / "examples"
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     global load_error
-    try:
-        logger.info("ASR startup: loading model_id=%s provider=%s", engine.model_id, engine.execution_provider)
-        await asyncio.to_thread(engine.load)
+    warm_task: asyncio.Task | None = None
+    if settings.lazy_load:
         logger.info(
-            "ASR ready: model_dir=%s sample_rate=%s chunk_samples=%s default_chunk_ms=%s",
+            "ASR startup: lazy mode, model stays unloaded until the first request "
+            "(idle_unload_seconds=%s model_dir=%s)",
+            settings.idle_unload_seconds,
             engine.model_dir,
-            engine.sample_rate,
-            engine.chunk_samples,
-            settings.default_chunk_ms,
         )
-        if settings.startup_self_test:
-            await _run_startup_self_tests(settings)
-    except Exception as exc:
-        load_error = str(exc)
-        logger.exception("ASR startup failed: %s", exc)
-    yield
+        # Read the weights now so the first load comes from page cache instead of disk.
+        warm_task = asyncio.create_task(asyncio.to_thread(engine.warm_page_cache))
+    else:
+        try:
+            logger.info("ASR startup: loading model_id=%s provider=%s", engine.model_id, engine.execution_provider)
+            await asyncio.to_thread(engine.load)
+            logger.info(
+                "ASR ready: model_dir=%s sample_rate=%s chunk_samples=%s default_chunk_ms=%s",
+                engine.model_dir,
+                engine.sample_rate,
+                engine.chunk_samples,
+                settings.default_chunk_ms,
+            )
+            if settings.startup_self_test:
+                await _run_startup_self_tests(settings)
+        except Exception as exc:
+            load_error = str(exc)
+            logger.exception("ASR startup failed: %s", exc)
+    watchdog = asyncio.create_task(_idle_unload_loop())
+    try:
+        yield
+    finally:
+        watchdog.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await watchdog
+        if warm_task is not None and not warm_task.done():
+            warm_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await warm_task
+
+async def _idle_unload_loop(interval_seconds: float = 15.0) -> None:
+    while True:
+        await asyncio.sleep(interval_seconds)
+        try:
+            if await asyncio.to_thread(engine.maybe_unload):
+                logger.info(
+                    "ASR model unloaded after %.0fs idle (load #%s took %.2fs)",
+                    engine.idle_unload_seconds,
+                    engine.loads,
+                    engine.load_seconds or 0.0,
+                )
+        except Exception as exc:
+            logger.warning("Idle unload check failed: %s", exc)
 
 
 app = FastAPI(title="Nemotron 3.5 ASR ONNX INT4", version="0.1.0", lifespan=lifespan)
@@ -73,12 +110,19 @@ async def aero_theme():
 
 @app.get("/health")
 async def health() -> dict[str, Any]:
+    files_present = engine.model_files_present()
     return {
-        "status": "healthy" if engine.ready else "unhealthy",
-        "ok": engine.ready,
+        "status": "healthy" if files_present else "unhealthy",
+        "ok": files_present,
+        "loaded": engine.ready,
         "default_model": engine.model_id,
         "models": [engine.model_id],
         "speedup": "n/a",
+        "lazy_load": settings.lazy_load,
+        "idle_unload_seconds": settings.idle_unload_seconds,
+        "idle_seconds": round(engine.idle_seconds, 1),
+        "loads": engine.loads,
+        "load_seconds": round(engine.load_seconds, 3) if engine.load_seconds else None,
     }
 
 
@@ -104,10 +148,11 @@ async def models() -> dict[str, Any]:
 
 @app.get("/ready")
 async def ready() -> JSONResponse:
-    if engine.ready:
+    if engine.model_files_present():
         return JSONResponse(
             {
                 "status": "ready",
+                "loaded": engine.ready,
                 "model_id": engine.model_id,
                 "model_dir": str(engine.model_dir),
                 "sample_rate": engine.sample_rate,
@@ -115,9 +160,14 @@ async def ready() -> JSONResponse:
                 "default_chunk_ms": settings.default_chunk_ms,
                 "supported_chunk_ms": list(SUPPORTED_CHUNK_MS),
                 "execution_provider": engine.execution_provider,
+                "lazy_load": settings.lazy_load,
+                "idle_unload_seconds": settings.idle_unload_seconds,
             }
         )
-    return JSONResponse({"status": "not_ready", "error": load_error}, status_code=503)
+    return JSONResponse(
+        {"status": "not_ready", "error": load_error or f"model files missing in {engine.model_dir}"},
+        status_code=503,
+    )
 
 
 @app.get("/v1/languages")
@@ -268,6 +318,8 @@ async def transcription_stream(websocket: WebSocket) -> None:
     vad_prefix_padding_ms: int | None = None
 
     try:
+        # Lazy mode: a stream needs the model resident, so load it now (no-op when loaded).
+        await engine.ensure_loaded()
         first = await websocket.receive()
         if "text" in first and first["text"]:
             config = _parse_control(first["text"])

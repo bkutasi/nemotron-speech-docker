@@ -22,6 +22,8 @@ class AppConfig:
     default_chunk_ms: int
     startup_self_test: bool
     self_test_audio: tuple[SelfTestAudio, ...]
+    lazy_load: bool
+    idle_unload_seconds: float
 
 
 def load_config(path: str | Path | None = None) -> AppConfig:
@@ -47,6 +49,10 @@ def load_config(path: str | Path | None = None) -> AppConfig:
         supported = ", ".join(str(value) for value in SUPPORTED_CONFIG_CHUNK_MS)
         raise ValueError(f"default_chunk_ms must be one of: {supported}")
     startup_self_test = _as_bool(os.getenv("STARTUP_SELF_TEST", data.get("startup_self_test", True)))
+    lazy_load = _as_bool(os.getenv("LAZY_LOAD", data.get("lazy_load", True)))
+    idle_unload_seconds = float(
+        os.getenv("IDLE_UNLOAD_SECONDS", data.get("idle_unload_seconds", 300))
+    )
 
     raw_tests = data.get("self_test_audio", [])
     if not isinstance(raw_tests, list):
@@ -65,6 +71,8 @@ def load_config(path: str | Path | None = None) -> AppConfig:
         default_chunk_ms=default_chunk_ms,
         startup_self_test=startup_self_test,
         self_test_audio=tuple(self_test_audio),
+        lazy_load=lazy_load,
+        idle_unload_seconds=idle_unload_seconds,
     )
 
 

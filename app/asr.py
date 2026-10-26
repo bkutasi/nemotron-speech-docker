@@ -1,9 +1,12 @@
 import asyncio
+import ctypes
+import gc
 import json
 import os
 import re
 import subprocess
 import tempfile
+import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -132,33 +135,124 @@ class UnsupportedChunkSizeError(ValueError):
     pass
 
 
+try:
+    _LIBC: ctypes.CDLL | None = ctypes.CDLL("libc.so.6")
+except OSError:  # pragma: no cover - musl and friends
+    _LIBC = None
+
+
+def malloc_trim() -> None:
+    """Return freed heap arenas to the OS; without it RSS climbs with every load cycle."""
+    if _LIBC is not None and hasattr(_LIBC, "malloc_trim"):
+        _LIBC.malloc_trim(0)
+
+
 class NemotronASR:
     def __init__(
         self,
         model_id: str,
         model_dir: str | Path,
         execution_provider: str = "cpu",
+        idle_unload_seconds: float = 0.0,
     ) -> None:
         self.model_id = model_id
         self.model_dir = Path(model_dir)
         self.execution_provider = execution_provider
+        self.idle_unload_seconds = float(idle_unload_seconds)
         self.model: og.Model | None = None
         self.sample_rate: int | None = None
         self.chunk_samples: int | None = None
+        self.load_seconds: float | None = None
+        self.loads = 0
+        self.last_error: str | None = None
+        self._lock = threading.Lock()
+        self._last_activity = time.monotonic()
+        self._active_streams = 0
 
     @property
     def ready(self) -> bool:
-        return self.model is not None and self.sample_rate is not None and self.chunk_samples is not None
+        return self.model is not None
+
+    @property
+    def idle_seconds(self) -> float:
+        return time.monotonic() - self._last_activity
+
+    def touch(self) -> None:
+        self._last_activity = time.monotonic()
+
+    def model_files_present(self) -> bool:
+        return (self.model_dir / "genai_config.json").exists()
 
     def download_model(self) -> None:
         self.model_dir.mkdir(parents=True, exist_ok=True)
-        snapshot_download(repo_id=self.model_id, local_dir=str(self.model_dir))
+        # Already on disk: reload never touches the network.
+        snapshot_download(
+            repo_id=self.model_id,
+            local_dir=str(self.model_dir),
+            local_files_only=self.model_files_present(),
+        )
+
+    async def ensure_loaded(self) -> None:
+        """Load on demand: only the first request after an unload pays for it."""
+        if self.model is not None:
+            self.touch()
+            return
+        try:
+            await asyncio.to_thread(self.load)
+        except Exception as exc:
+            self.last_error = str(exc)
+            raise ModelNotReadyError(f"ASR model load failed: {exc}") from exc
+        self.touch()
 
     def load(self) -> None:
-        self.download_model()
-        self.sample_rate, self.chunk_samples = self._load_audio_config()
-        config = self._get_config()
-        self.model = og.Model(config)
+        with self._lock:
+            if self.model is not None:
+                return
+            started = time.monotonic()
+            self.download_model()
+            self.sample_rate, self.chunk_samples = self._load_audio_config()
+            config = self._get_config()
+            self.model = og.Model(config)
+            self.load_seconds = time.monotonic() - started
+            self.loads += 1
+            self.last_error = None
+            self.touch()
+            print(
+                f"ASR model loaded in {self.load_seconds:.2f}s "
+                f"(load #{self.loads}, provider={self.execution_provider})",
+                flush=True,
+            )
+
+    def begin_stream(self) -> None:
+        self._active_streams += 1
+
+    def unload(self) -> bool:
+        """Drop the resident model and hand its heap back to the OS."""
+        with self._lock:
+            if self.model is None:
+                return False
+            self.model = None
+            gc.collect()
+            malloc_trim()
+            self.touch()
+            return True
+
+    def maybe_unload(self) -> bool:
+        if self.idle_unload_seconds <= 0 or self.model is None:
+            return False
+        if self._active_streams > 0 or self.idle_seconds < self.idle_unload_seconds:
+            return False
+        return self.unload()
+
+    def warm_page_cache(self) -> None:
+        """Read the model files once so a reload copies from page cache, not disk."""
+        if not self.model_dir.exists():
+            return
+        for path in sorted(self.model_dir.rglob("*")):
+            if path.is_file():
+                with path.open("rb") as f:
+                    while f.read(8 << 20):
+                        pass
 
     async def transcribe_bytes(
         self,
@@ -171,6 +265,7 @@ class NemotronASR:
         vad_silence_duration_ms: int | None = None,
         vad_prefix_padding_ms: int | None = None,
     ) -> TranscriptionResult:
+        await self.ensure_loaded()
         self._assert_ready()
         audio = await asyncio.to_thread(self._decode_audio_bytes, content, filename)
         assert self.sample_rate is not None
@@ -201,6 +296,7 @@ class NemotronASR:
         vad_silence_duration_ms: int | None = None,
         vad_prefix_padding_ms: int | None = None,
     ) -> "ASRStream":
+        await self.ensure_loaded()
         self._assert_ready()
         return ASRStream(self, language=language, use_vad=use_vad, chunk_ms=chunk_ms,
                          vad_threshold=vad_threshold,
@@ -208,7 +304,8 @@ class NemotronASR:
                          vad_prefix_padding_ms=vad_prefix_padding_ms)
 
     def release_stream(self) -> None:
-        pass
+        self._active_streams = max(0, self._active_streams - 1)
+        self.touch()
 
     def _assert_ready(self) -> None:
         if not self.ready:
@@ -481,6 +578,8 @@ class ASRStream:
         self.closed = False
         self._finished = False
         self._final: dict[str, Any] | None = None
+        # Counted last: a construction error must not leave the engine pinned as busy.
+        engine.begin_stream()
 
     def accept_pcm_f32le(self, payload: bytes) -> str:
         if len(payload) % 4 != 0:
@@ -551,8 +650,19 @@ def build_engine_from_env() -> NemotronASR:
         model_id=os.getenv("MODEL_ID", "onnx-community/nemotron-3.5-asr-streaming-0.6b-onnx-int4"),
         model_dir=os.getenv("MODEL_DIR", "/models/nemotron"),
         execution_provider=os.getenv("EXECUTION_PROVIDER", "cpu"),
+        idle_unload_seconds=float(os.getenv("IDLE_UNLOAD_SECONDS", "300")),
     )
 
 
-def build_engine(model_id: str, model_dir: str | Path, execution_provider: str = "cpu") -> NemotronASR:
-    return NemotronASR(model_id=model_id, model_dir=model_dir, execution_provider=execution_provider)
+def build_engine(
+    model_id: str,
+    model_dir: str | Path,
+    execution_provider: str = "cpu",
+    idle_unload_seconds: float = 300.0,
+) -> NemotronASR:
+    return NemotronASR(
+        model_id=model_id,
+        model_dir=model_dir,
+        execution_provider=execution_provider,
+        idle_unload_seconds=idle_unload_seconds,
+    )

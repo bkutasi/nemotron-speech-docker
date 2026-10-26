@@ -11,3 +11,6 @@ models/
 vad-dictate/*.log
 nemotron-models/
 parakeet-models/
+
+# scratch work
+.tmp/

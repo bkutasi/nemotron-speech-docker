@@ -12,6 +12,8 @@ services:
       EXECUTION_PROVIDER: cpu
       CONFIG_PATH: /app/config.yaml
       HF_HUB_DOWNLOAD_TIMEOUT: "60"
+      LAZY_LOAD: "${LAZY_LOAD:-true}"                # stay unloaded after `docker compose up`
+      IDLE_UNLOAD_SECONDS: "${IDLE_UNLOAD_SECONDS:-300}"  # drop the model from RAM after 5 min idle
     volumes:
       - ./nemotron-models:/models
       - ./examples:/app/examples  # live UI: no rebuild for HTML/CSS/JS tweaks
@@ -43,6 +45,8 @@ services:
       - ./parakeet-models:/app/models
     environment:
       OMP_NUM_THREADS: "4"
+      LAZY_LOAD: "${LAZY_LOAD:-true}"                # stay unloaded after `docker compose up`
+      IDLE_UNLOAD_SECONDS: "${IDLE_UNLOAD_SECONDS:-300}"  # drop the model from RAM after 5 min idle
     restart: unless-stopped
     logging:
       driver: json-file
