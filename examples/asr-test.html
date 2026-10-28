@@ -10,6 +10,7 @@
     :root{--bg:#0d1117;--card:#161b22;--border:#30363d;--text:#e6edf3;--muted:#7d8590;--accent:#2f81f7;--accent-h:#4493f8;--green:#238636;--red:#da3633;--yellow:#d29922}
     body{font-family:-apple-system,system-ui,sans-serif;background:var(--bg);color:var(--text);margin:0;padding:1rem;min-height:100vh}
     .container{max-width:680px;margin:0 auto}
+    .page-footer{max-width:680px;margin:1rem auto 0}
     .header{display:flex;align-items:center;gap:0.6rem;margin-bottom:1.2rem}
     .header h1{font-size:1.15rem;font-weight:600;margin:0}
     .dot{width:10px;height:10px;border-radius:50%;background:var(--muted);flex-shrink:0;transition:background 0.2s}
@@ -153,7 +154,7 @@
     <div class="metrics" id="fileMetrics"></div>
   </div>
 </div>
-<p class="note"><a href="/demo" style="color:var(--accent)">Classic Win95 demo</a></p>
+<footer class="page-footer note"><a href="/demo" style="color:var(--accent)">Classic Win95 demo</a></footer>
 
 <script>
 const TARGET_RATE = 16000;
@@ -233,7 +234,7 @@ function toggleVadSettings(tab) {
 
 // --- Mic streaming ---
 let ws = null, audioCtx = null, workletNode = null, micStream = null, nativeRate = 0, serverRate = TARGET_RATE;
-let partialText = '';
+let committedText = '';
 let finalWaiter = null;
 let sendBuffer = [], sendBufLen = 0, flushTimer = null, lastFlush = 0;
 const FLUSH_MS = 180;
@@ -245,7 +246,7 @@ const micMetrics = document.getElementById('micMetrics');
 async function startMic() {
   startBtn.disabled = true; stopBtn.disabled = false;
   setStatus('Requesting microphone...', '');
-  partialText = '';
+  committedText = '';
   finalWaiter = null;
   micOut.innerHTML = '<span class="placeholder">Connecting...</span>';
   micMetrics.innerHTML = '';
@@ -280,11 +281,13 @@ async function startMic() {
     if (msg.event === 'ready') {
       startAudio(msg.sample_rate || TARGET_RATE);
     } else if (msg.event === 'partial') {
-      if (msg.cumulative !== undefined) micOut.innerHTML = '<span class="partial">' + esc(msg.cumulative) + '</span>';
-      else { partialText += msg.text; micOut.innerHTML = '<span class="partial">' + esc(partialText) + '</span>'; }
+      const partial = msg.cumulative !== undefined ? msg.cumulative : committedText + msg.text;
+      micOut.innerHTML = '<span class="final">' + esc(committedText) + '</span><span class="partial">' + esc(partial.slice(committedText.length)) + '</span>';
     } else if (msg.event === 'segment') {
-      // Machine consumers (omp-shim) use indexed committed chunks; browser already shows cumulative partial.
+      committedText += msg.text;
+      micOut.innerHTML = '<span class="final">' + esc(committedText) + '</span>';
     } else if (msg.event === 'final') {
+      committedText = msg.text;
       micOut.innerHTML = '<span class="final">' + esc(msg.text) + '</span>';
       micMetrics.innerHTML = fmtMetrics(msg);
       setStatus('Done', '');
