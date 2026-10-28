@@ -4,7 +4,7 @@ execution_provider: cpu
 default_chunk_ms: 560
 startup_self_test: true
 lazy_load: true
-idle_unload_seconds: 300
+idle_unload_seconds: 20
 self_test_audio:
   - language: en
     path: tests/audio/sample-0.mp3

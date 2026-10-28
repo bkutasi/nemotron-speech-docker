@@ -8,9 +8,8 @@ FastAPI wrapper for `onnx-community/nemotron-3.5-asr-streaming-0.6b-onnx-int4` u
 docker compose up -d --build
 ```
 
-Three ports are exposed:
+Two ports are exposed:
 - **HTTP 3003** -- API access (curl, scripts, file upload)
-- **HTTPS 3004** -- Browser UI with microphone (self-signed cert)
 - **HTTP 3005** -- Parakeet-v3 offline batch sidecar (`POST /transcribe`, plus `POST /audio/transcriptions` and `POST /v1/audio/transcriptions` aliases)
 
 The first boot downloads the models into the host bind mounts (`./nemotron-models:/models`, `./parakeet-models:/app/models`). With `LAZY_LOAD=false` startup also loads the model and runs the configured MP3 smoke tests, logging duration, wall time, realtime factor, and a transcript preview; the default lazy mode skips that and loads on first use.
@@ -19,44 +18,36 @@ Health checks (compose gates both services on `/ready`, which reports the weight
 
 ```bash
 curl http://localhost:3003/health
-curl -k https://localhost:3004/health
 curl http://localhost:3003/ready
 curl http://localhost:3005/ready
 ```
 
 ## Model residency (lazy load + idle unload)
 
-Neither service keeps its weights in RAM when nothing is happening. `docker compose up` leaves both models on disk only; the first request loads them, and `IDLE_UNLOAD_SECONDS` (default 300 = 5 min) of no traffic drops them again. Predictions from `/transcriptions`, `/transcribe` and the websocket stream all load the model themselves, so a cold request just takes the load on the chin.
+By default, Compose starts both services with lazy loading: the models stay unloaded until a transcription request needs them. Nemotron's `POST /v1/transcriptions` and WebSocket streams, and Parakeet's `POST /transcribe`, load their respective models on demand. A cold request therefore takes longer.
 
-Reload speed comes from keeping the files hot rather than resident: startup reads the whole model directory once, so the weights live in the page cache and a reload is a memory copy instead of a disk read. Weights are never re-downloaded, the snapshot is only fetched when the bind mount is empty.
+After a period of inactivity, each service unloads its model. Compose defaults `IDLE_UNLOAD_SECONDS` to 20 seconds for Nemotron and 300 seconds for Parakeet; each watchdog checks every 15 seconds, so unloading can occur after the threshold. Model files are persisted in the bind mounts and can be read again on a subsequent load.
 
-Unloading is not just dropping the Python reference. ONNX Runtime keeps freed buffers in its own arena, so the process held on to roughly 900 MiB after the first unload and more on every cycle. `unload()` therefore calls `malloc_trim(0)` after `gc.collect()`, which hands that heap back to the kernel. Measured on this host (CPU, int4, `IDLE_UNLOAD_SECONDS=20`, three load/unload cycles):
+The Nemotron container recycles its Python process after the idle timeout, releasing inference libraries and native allocations as well as the model. It retains the listening socket so new connections can queue during startup; idle keep-alive connections may need to reconnect. Recycling waits for active HTTP requests and WebSocket streams to finish. The first request after recycling pays the Python startup and model-load cost.
 
-| Service | engine load | cold request | reload request | RSS loaded | RSS after unload | fresh start |
-|---|---|---|---|---|---|---|
-| nemotron-asr | 0.38s | 1.51s | 1.27s | 682 MiB | 166 MiB | 122 MiB |
-| parakeet-asr | 0.75s | 1.27s | 0.95s | ~1.0 GiB | 101 MiB | 49 MiB |
-
-Those idle figures were flat across all three cycles, so repeated load/unload does not creep upward. A stream held open for 24s with a 20s idle window stayed loaded throughout: nothing unloads under a stream or an upload.
-
-`/health` carries the residency detail (`loaded`, `loads`, `load_seconds`, `idle_seconds`). Nothing unloads while a stream or upload is in flight.
+`/health` carries the residency detail (`loaded`, `loads`, `load_seconds`, `idle_seconds`); counters reset on each Nemotron process recycle. When running `uvicorn app.main:app` directly instead of the container entrypoint, Nemotron only unloads the model and may retain native memory.
 
 Disable either half without editing the compose file:
 
 ```bash
-LAZY_LOAD=false docker compose up -d         # load at startup, never unload
+LAZY_LOAD=false docker compose up -d         # load at startup, then unload when idle
 IDLE_UNLOAD_SECONDS=0 docker compose up -d   # once loaded, stay loaded
 IDLE_UNLOAD_SECONDS=30 docker compose up -d  # aggressive unload, handy for testing
 ```
 
 ## Live Transcription Test
 
-Open `https://localhost:3004/` in a browser. Accept the self-signed certificate warning.
+Open `http://localhost:3003/` in a browser on the host. Browsers treat localhost as a secure context for microphone access.
 
 - Live Mic: Click Start, allow microphone access, and speak. Partial transcripts accumulate in real time. An audio level bar shows mic input.
 - File Upload: Choose an audio file and click Transcribe.
 
-For LAN access, open `https://<host-ip>:3004/` from a local browser (not X11 forwarded -- mic must be on the machine running the browser).
+For microphone access from another machine, provide HTTPS with an external reverse proxy; plain HTTP to a LAN IP is not a secure browser context.
 
 ## Examples
 
@@ -190,5 +181,5 @@ CONFIG_PATH
 
 # model residency (both services)
 LAZY_LOAD              # default true: start with the model unloaded
-IDLE_UNLOAD_SECONDS    # default 300: idle time before the model leaves RAM
+IDLE_UNLOAD_SECONDS    # defaults: Nemotron 20, Parakeet 300 seconds
 ```

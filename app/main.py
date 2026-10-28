@@ -1,12 +1,15 @@
 import asyncio
 import contextlib
 import logging
+import os
+import sys
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Annotated, Any
 
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, JSONResponse
+from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from app.asr import (
     LANG_TO_ID,
@@ -30,6 +33,7 @@ engine: NemotronASR = build_engine(
 )
 load_error: str | None = None
 active_streams = 0
+active_requests = 0
 
 _STATIC_DIR = Path(__file__).resolve().parent.parent / "examples"
 
@@ -37,16 +41,13 @@ _STATIC_DIR = Path(__file__).resolve().parent.parent / "examples"
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     global load_error
-    warm_task: asyncio.Task | None = None
-    if settings.lazy_load:
+    if settings.lazy_load or os.environ.get("NEMOTRON_RECYCLED") == "1":
         logger.info(
             "ASR startup: lazy mode, model stays unloaded until the first request "
             "(idle_unload_seconds=%s model_dir=%s)",
             settings.idle_unload_seconds,
             engine.model_dir,
         )
-        # Read the weights now so the first load comes from page cache instead of disk.
-        warm_task = asyncio.create_task(asyncio.to_thread(engine.warm_page_cache))
     else:
         try:
             logger.info("ASR startup: loading model_id=%s provider=%s", engine.model_id, engine.execution_provider)
@@ -70,15 +71,25 @@ async def lifespan(app: FastAPI):
         watchdog.cancel()
         with contextlib.suppress(asyncio.CancelledError):
             await watchdog
-        if warm_task is not None and not warm_task.done():
-            warm_task.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await warm_task
 
 async def _idle_unload_loop(interval_seconds: float = 15.0) -> None:
     while True:
         await asyncio.sleep(interval_seconds)
         try:
+            if os.environ.get("NEMOTRON_LISTEN_FD") is not None:
+                if (
+                    engine.idle_unload_seconds > 0
+                    and engine.ready
+                    and engine.idle_seconds >= engine.idle_unload_seconds
+                    and active_requests == 0
+                ):
+                    logger.info("Recycling idle ASR process to release inference memory")
+                    os.execve(
+                        sys.executable,
+                        [sys.executable, "-m", "app.server"],
+                        {**os.environ, "NEMOTRON_RECYCLED": "1"},
+                    )
+                continue
             if await asyncio.to_thread(engine.maybe_unload):
                 logger.info(
                     "ASR model unloaded after %.0fs idle (load #%s took %.2fs)",
@@ -90,7 +101,40 @@ async def _idle_unload_loop(interval_seconds: float = 15.0) -> None:
             logger.warning("Idle unload check failed: %s", exc)
 
 
+class ActiveRequestsMiddleware:
+    def __init__(self, app: ASGIApp) -> None:
+        self.app = app
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        global active_requests
+        if scope["type"] not in {"http", "websocket"}:
+            await self.app(scope, receive, send)
+            return
+
+        active_requests += 1
+
+        async def tracked_receive() -> Message:
+            message = await receive()
+            # h11 needs the final body event delivered before a CPU-bound handler responds.
+            if message["type"] == "http.request" and not message.get("more_body", False):
+                await asyncio.sleep(0)
+            return message
+
+        try:
+            await self.app(scope, tracked_receive if scope["type"] == "http" else receive, send)
+        finally:
+            if scope["path"] in {
+                "/v1/transcriptions",
+                "/v1/audio/transcriptions",
+                "/v1/transcriptions/stream",
+                "/v1/audio/transcriptions/stream",
+            }:
+                engine.touch()
+            active_requests -= 1
+
+
 app = FastAPI(title="Nemotron 3.5 ASR ONNX INT4", version="0.1.0", lifespan=lifespan)
+app.add_middleware(ActiveRequestsMiddleware)
 
 
 @app.get("/")

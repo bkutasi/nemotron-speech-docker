@@ -10,7 +10,7 @@ import threading
 import time
 from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import Any
+from typing import Any, Protocol, cast
 
 import numpy as np
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
@@ -36,7 +36,19 @@ def malloc_trim() -> None:
     if _LIBC is not None and hasattr(_LIBC, "malloc_trim"):
         _LIBC.malloc_trim(0)
 
-recognizer: Any = None
+class RecognitionStream(Protocol):
+    result: Any
+
+    def accept_waveform(self, sample_rate: int, audio: np.ndarray) -> None: ...
+
+
+class OfflineRecognizer(Protocol):
+    def create_stream(self) -> RecognitionStream: ...
+
+    def decode_stream(self, stream: RecognitionStream) -> None: ...
+
+
+recognizer: OfflineRecognizer | None = None
 
 IDLE_UNLOAD_SECONDS = float(os.getenv("IDLE_UNLOAD_SECONDS", "300"))
 LAZY_LOAD = os.getenv("LAZY_LOAD", "true").strip().lower() in {"1", "true", "yes", "on"}
@@ -59,7 +71,7 @@ def _model_files_present() -> bool:
         for name in ("encoder.int8.onnx", "decoder.int8.onnx", "joiner.int8.onnx", "tokens.txt")
     )
 
-def _ensure_loaded() -> Any:
+def _ensure_loaded() -> OfflineRecognizer:
     """Load on demand: only the first request after an unload pays for it."""
     global recognizer, load_seconds, loads
     with _recognizer_lock:
@@ -93,14 +105,6 @@ def _maybe_unload() -> bool:
         return False
     return _unload()
 
-def _warm_page_cache() -> None:
-    """Read the model files once so a reload copies from page cache, not disk."""
-    for path in sorted(MODEL_DIR.rglob("*")):
-        if path.is_file():
-            with path.open("rb") as f:
-                while f.read(8 << 20):
-                    pass
-
 async def _idle_unload_loop(interval_seconds: float = 15.0) -> None:
     while True:
         await asyncio.sleep(interval_seconds)
@@ -116,10 +120,10 @@ async def _idle_unload_loop(interval_seconds: float = 15.0) -> None:
             logger.warning("Idle unload check failed: %s", exc)
 
 
-def _load_recognizer() -> Any:
+def _load_recognizer() -> OfflineRecognizer:
     import sherpa_onnx
 
-    return sherpa_onnx.OfflineRecognizer.from_transducer(
+    return cast(OfflineRecognizer, sherpa_onnx.OfflineRecognizer.from_transducer(
         encoder=str(MODEL_DIR / "encoder.int8.onnx"),
         decoder=str(MODEL_DIR / "decoder.int8.onnx"),
         joiner=str(MODEL_DIR / "joiner.int8.onnx"),
@@ -130,13 +134,12 @@ def _load_recognizer() -> Any:
         feature_dim=80,
         num_threads=NUM_THREADS,
         provider="cpu",
-    )
+    ))
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     global recognizer
-    warm_task: asyncio.Task | None = None
     if LAZY_LOAD:
         logger.info(
             "Parakeet startup: lazy mode, model stays unloaded until the first request "
@@ -144,8 +147,6 @@ async def lifespan(app: FastAPI):
             IDLE_UNLOAD_SECONDS,
             MODEL_DIR,
         )
-        # Read the weights now so the first load comes from page cache instead of disk.
-        warm_task = asyncio.create_task(asyncio.to_thread(_warm_page_cache))
     else:
         try:
             recognizer = _ensure_loaded()
@@ -160,10 +161,6 @@ async def lifespan(app: FastAPI):
         watchdog.cancel()
         with contextlib.suppress(asyncio.CancelledError):
             await watchdog
-        if warm_task is not None and not warm_task.done():
-            warm_task.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await warm_task
 
 
 app = FastAPI(title="Parakeet-TDT-0.6B-v3 offline ASR", version="0.1.0", lifespan=lifespan)

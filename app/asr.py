@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import asyncio
 import ctypes
 import gc
@@ -10,11 +12,11 @@ import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
-import numpy as np
-import onnxruntime_genai as og
-from huggingface_hub import snapshot_download
+if TYPE_CHECKING:
+    import numpy as np
+    import onnxruntime_genai as og
 
 
 LANG_TO_ID: dict[str, tuple[int, str]] = {
@@ -184,6 +186,8 @@ class NemotronASR:
         return (self.model_dir / "genai_config.json").exists()
 
     def download_model(self) -> None:
+        from huggingface_hub import snapshot_download
+
         self.model_dir.mkdir(parents=True, exist_ok=True)
         # Already on disk: reload never touches the network.
         snapshot_download(
@@ -205,6 +209,8 @@ class NemotronASR:
         self.touch()
 
     def load(self) -> None:
+        import onnxruntime_genai as og
+
         with self._lock:
             if self.model is not None:
                 return
@@ -243,16 +249,6 @@ class NemotronASR:
         if self._active_streams > 0 or self.idle_seconds < self.idle_unload_seconds:
             return False
         return self.unload()
-
-    def warm_page_cache(self) -> None:
-        """Read the model files once so a reload copies from page cache, not disk."""
-        if not self.model_dir.exists():
-            return
-        for path in sorted(self.model_dir.rglob("*")):
-            if path.is_file():
-                with path.open("rb") as f:
-                    while f.read(8 << 20):
-                        pass
 
     async def transcribe_bytes(
         self,
@@ -318,6 +314,8 @@ class NemotronASR:
         return int(config["model"]["sample_rate"]), int(config["model"]["chunk_samples"])
 
     def _get_config(self) -> og.Config:
+        import onnxruntime_genai as og
+
         config = og.Config(str(self.model_dir))
         if self.execution_provider != "follow_config":
             config.clear_providers()
@@ -336,6 +334,8 @@ class NemotronASR:
             tmp_path.unlink(missing_ok=True)
 
     def _load_audio_file(self, path: Path) -> np.ndarray:
+        import numpy as np
+
         try:
             import soundfile as sf
 
@@ -354,6 +354,8 @@ class NemotronASR:
         return np.ascontiguousarray(audio, dtype=np.float32)
 
     def _load_audio_with_ffmpeg(self, path: Path) -> tuple[np.ndarray, int]:
+        import numpy as np
+
         assert self.sample_rate is not None
         command = [
             "ffmpeg",
@@ -376,6 +378,8 @@ class NemotronASR:
     @staticmethod
     def _fit_chunk(chunk: np.ndarray, chunk_samples: int) -> np.ndarray:
         """Zero-pad partial chunks to the model's fixed chunk size."""
+        import numpy as np
+
         chunk = np.asarray(chunk, dtype=np.float32)
         if chunk.size >= chunk_samples:
             return chunk[:chunk_samples]
@@ -394,6 +398,8 @@ class NemotronASR:
         vad_silence_duration_ms: int | None = None,
         vad_prefix_padding_ms: int | None = None,
     ) -> TranscriptionResult:
+        import numpy as np
+
         language_id, language_name = self._language(language)
         session = self._new_session(
             language_id=language_id, use_vad=use_vad,
@@ -477,6 +483,8 @@ class NemotronASR:
         vad_silence_duration_ms: int | None = None,
         vad_prefix_padding_ms: int | None = None,
     ) -> "GenerationSession":
+        import onnxruntime_genai as og
+
         assert self.model is not None
         processor = og.StreamingProcessor(self.model)
         processor.set_option("use_vad", "false")
@@ -556,6 +564,8 @@ class ASRStream:
         vad_silence_duration_ms: int | None = None,
         vad_prefix_padding_ms: int | None = None,
     ) -> None:
+        import numpy as np
+
         self.engine = engine
         language_id, language_name = engine._language(language)
         self.language = language
@@ -582,6 +592,8 @@ class ASRStream:
         engine.begin_stream()
 
     def accept_pcm_f32le(self, payload: bytes) -> str:
+        import numpy as np
+
         if len(payload) % 4 != 0:
             raise ValueError("Binary audio chunks must be little-endian float32 PCM")
         incoming = np.frombuffer(payload, dtype=np.float32).copy()
@@ -596,6 +608,8 @@ class ASRStream:
         return text
 
     def finish(self) -> dict[str, Any]:
+        import numpy as np
+
         if self._finished:
             assert self._final is not None
             return self._final

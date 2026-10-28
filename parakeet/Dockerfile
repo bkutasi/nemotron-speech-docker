@@ -1,4 +1,4 @@
-FROM python:3.12-slim
+FROM python:3.14-slim
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ffmpeg libsndfile1 curl bzip2 ca-certificates \
@@ -6,7 +6,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 WORKDIR /app
 COPY requirements.txt /app/requirements.txt
-RUN pip install --no-cache-dir -r /app/requirements.txt
+RUN python -m pip install --no-cache-dir --upgrade pip \
+    && python -m pip install --no-cache-dir -r /app/requirements.txt
 
 # Runtime fetch only: ./parakeet-models bind mount hides image content,
 # so a build-time fetch would be re-downloaded by the entrypoint anyway.
